@@ -10,6 +10,7 @@
 
 use crate::audio::{AudioConfig, AudioPump};
 use crate::ffmpeg::{self, Vendor};
+use crate::games::{self, Installed};
 use crate::library::{self, Clip, Library};
 use crate::ring::{self, Ring};
 use crate::settings::Settings;
@@ -34,6 +35,8 @@ const START_GRACE: Duration = Duration::from_secs(6);
 const GAME_LINGER: Duration = Duration::from_secs(60);
 /// An app must look like a game for this long before capture starts.
 const GAME_DWELL: Duration = Duration::from_secs(3);
+/// How often to look for newly installed games.
+const GAME_SCAN_EVERY: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -111,6 +114,8 @@ pub struct Recorder {
     thumbs_dir: PathBuf,
     library: Arc<Library>,
     inner: Mutex<Inner>,
+    /// Games that launchers installed.
+    installed: Mutex<Arc<Vec<Installed>>>,
     saving: AtomicBool,
     listener: Mutex<Option<Listener>>,
 }
@@ -135,6 +140,7 @@ impl Recorder {
                 candidate: None,
                 restarts: 0,
             }),
+            installed: Mutex::new(Arc::new(Vec::new())),
             saving: AtomicBool::new(false),
             listener: Mutex::new(None),
         });
@@ -150,6 +156,18 @@ impl Recorder {
                     Some(r) => r.tick(),
                     None => break,
                 }
+            })
+            .ok();
+        let weak = Arc::downgrade(&rec);
+        std::thread::Builder::new()
+            .name("game-scan".into())
+            .spawn(move || loop {
+                let found = Arc::new(games::scan());
+                match weak.upgrade() {
+                    Some(r) => *r.installed.lock() = found,
+                    None => break,
+                }
+                std::thread::sleep(GAME_SCAN_EVERY);
             })
             .ok();
         rec
@@ -236,6 +254,7 @@ impl Recorder {
 
     /// Runs every 500 ms: watches FFmpeg, writes session chunks, tracks the game.
     fn tick(&self) {
+        let installed = self.installed.lock().clone();
         let mut inner = self.inner.lock();
         let mut changed = false;
 
@@ -244,10 +263,10 @@ impl Recorder {
                 .ok()
                 .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
                 .unwrap_or_default();
-            let game = !fg.exe.eq_ignore_ascii_case(&me)
-                && fg.monitor == Some(inner.settings.monitor)
-                && win::looks_like_game(&fg, &inner.settings.game_apps);
-            if game {
+            let game = (!fg.exe.eq_ignore_ascii_case(&me) && fg.monitor == Some(inner.settings.monitor))
+                .then(|| games::detect(&fg, &installed, &inner.settings.game_apps))
+                .flatten();
+            if let Some(game) = game {
                 // A new match must hold for a moment, so a short full-screen video or overlay does not start capture.
                 let since = match &inner.candidate {
                     Some((exe, t)) if *exe == fg.exe => *t,
@@ -256,7 +275,7 @@ impl Recorder {
                 inner.candidate = Some((fg.exe.clone(), since));
                 let capturing = inner.game_seen.is_some_and(|t| t.elapsed() < GAME_LINGER);
                 if capturing || since.elapsed() >= GAME_DWELL {
-                    inner.last_game = Some(win::game_name(&fg.exe, &fg.title));
+                    inner.last_game = Some(game.name);
                     inner.game_seen = Some(Instant::now());
                 }
             } else {

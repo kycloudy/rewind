@@ -1,5 +1,6 @@
 mod audio;
 mod ffmpeg;
+mod games;
 mod gate;
 mod library;
 mod recorder;

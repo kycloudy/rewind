@@ -33,81 +33,26 @@ pub fn foreground() -> Option<Foreground> {
     imp::foreground()
 }
 
-/// Apps that are not games, even when they run full screen or from a game folder.
-/// Lower-case exe names without ".exe".
-const NOT_GAMES: &[&str] = &[
-    // Windows
-    "applicationframehost", "cmd", "explorer", "lockapp", "screenclippinghost", "searchhost", "searchui",
-    "shellexperiencehost", "snippingtool", "startmenuexperiencehost", "systemsettings", "taskmgr",
-    "textinputhost", "windowsinternal.composableshell.experiences.textinput.inputapp", "windowsterminal",
-    "winstore.app", "wwahost",
-    // Browsers
-    "arc", "brave", "chrome", "firefox", "msedge", "opera", "opera_gx", "vivaldi",
-    // Video, music, and photos
-    "kodi", "microsoft.media.player", "mpc-be64", "mpc-hc", "mpc-hc64", "mpv", "photos", "plex", "potplayer",
-    "potplayermini64", "spotify", "video.ui", "vlc", "wmplayer",
-    // Chat, calls, and office
-    "discord", "excel", "ms-teams", "olk", "onenote", "outlook", "powerpnt", "skype", "slack", "teams",
-    "winword", "zoom",
-    // Remote desktops and virtual machines
-    "moonlight", "msrdc", "mstsc", "parsecd", "virtualboxvm", "vmconnect", "vmware", "vmware-vmx",
-    // Game launchers and tools
-    "battle.net", "eadesktop", "epicgameslauncher", "galaxyclient", "losslessscaling", "medal", "nvidia overlay",
-    "obs64", "origin", "riotclientservices", "riotclientux", "soundpad", "steam", "steamwebhelper", "upc",
-    "uplay", "wallpaper32", "wallpaper64",
-    // Code editors
-    "code", "cursor", "devenv",
-];
+/// A registry root.
+#[derive(Clone, Copy)]
+pub enum Hive {
+    User,
+    Machine,
+}
 
-/// Folders where game launchers install games, lower case with `\\` separators.
-const GAME_DIRS: &[&str] = &[
-    "\\steamapps\\common\\",
-    "\\epic games\\",
-    "\\gog galaxy\\games\\",
-    "\\gog games\\",
-    "\\riot games\\",
-    "\\xboxgames\\",
-    "\\ubisoft game launcher\\games\\",
-    "\\ea games\\",
-    "\\origin games\\",
-    "\\battle.net\\games\\",
-];
+/// A string value from the registry.
+pub fn reg_string(hive: Hive, key: &str, value: &str) -> Option<String> {
+    imp::reg_string(hive, key, value)
+}
 
-/// Games that often run in a normal window.
-const KNOWN_GAMES: &[&str] = &[
-    "cs2", "dota2", "eldenring", "fortniteclient-win64-shipping", "gta5", "league of legends", "minecraft",
-    "overwatch", "r5apex", "rocketleague", "terraria", "valorant-win64-shipping", "wow",
-];
+/// The names of a registry key's subkeys.
+pub fn reg_subkeys(hive: Hive, key: &str) -> Vec<String> {
+    imp::reg_subkeys(hive, key)
+}
 
-/// Tools that install under game folders but are not games.
-const GAME_FOLDER_TOOLS: &[&str] = &[
-    "crashreporter", "crashhandler", "epicgameslauncher", "steam", "steamwebhelper", "unins000", "vc_redist.x64",
-];
-
-/// Guesses whether the foreground app is a game.
-///
-/// An app on the user's list always counts. Other apps count when they are a
-/// known game, run from a game launcher's install folder, or run full screen,
-/// unless they are a known non-game.
-pub fn looks_like_game(fg: &Foreground, user_games: &[String]) -> bool {
-    let exe = fg.exe.to_lowercase();
-    let exe = exe.trim_end_matches(".exe");
-    if exe.is_empty() {
-        return false;
-    }
-    if user_games.iter().any(|g| g.trim().trim_end_matches(".exe").eq_ignore_ascii_case(exe)) {
-        return true;
-    }
-    if NOT_GAMES.contains(&exe) {
-        return false;
-    }
-    // Minecraft Java Edition runs as javaw, like every other Java app.
-    let minecraft = matches!(exe, "java" | "javaw") && fg.title.starts_with("Minecraft");
-    if fg.full_screen || minecraft || KNOWN_GAMES.contains(&exe) {
-        return true;
-    }
-    let path = fg.path.to_lowercase().replace('/', "\\");
-    !GAME_FOLDER_TOOLS.contains(&exe) && GAME_DIRS.iter().any(|d| path.contains(d))
+/// Root folders of the local fixed drives, e.g. `C:\`.
+pub fn fixed_drives() -> Vec<String> {
+    imp::fixed_drives()
 }
 
 pub fn monitors() -> Vec<Monitor> {
@@ -125,35 +70,6 @@ pub fn chime(rising: bool) {
 
 pub fn reveal(path: &Path) {
     imp::reveal(path)
-}
-
-/// Builds a game name from the foreground window, e.g. "Minecraft* 1.21.1 - Multiplayer" -> "Minecraft".
-pub fn game_name(exe: &str, title: &str) -> String {
-    let head = title.split(" - ").next().unwrap_or("").split(" | ").next().unwrap_or("");
-    let words: Vec<&str> = head
-        .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| c == '*' || c == '™' || c == '®'))
-        .filter(|w| !w.is_empty())
-        .take_while(|w| !is_version(w))
-        .collect();
-    let name = words.join(" ");
-    if !name.is_empty() && name.chars().count() <= 48 {
-        return name;
-    }
-    // Fall back to a tidied exe name: "VALORANT-Win64-Shipping" -> "VALORANT".
-    let stem = exe
-        .trim_end_matches("-Win64-Shipping")
-        .trim_end_matches("_x64")
-        .trim_end_matches("64")
-        .replace(['_', '-'], " ");
-    let stem = stem.trim();
-    if stem.is_empty() { "Desktop".into() } else { stem.to_string() }
-}
-
-/// "1.21.1", "v2.3" and similar.
-fn is_version(w: &str) -> bool {
-    let digits = w.strip_prefix(['v', 'V']).unwrap_or(w);
-    digits.starts_with(|c: char| c.is_ascii_digit()) && (digits.contains('.') || digits.len() < w.len())
 }
 
 /// 16-bit mono WAV with a soft two-note chime.
@@ -202,6 +118,11 @@ mod imp {
         EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ,
+        RRF_RT_REG_SZ,
+    };
     use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
     use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
     use windows_sys::Win32::System::Threading::{
@@ -214,6 +135,7 @@ mod imp {
     };
 
     const CF_HDROP: u32 = 15;
+    const DRIVE_FIXED: u32 = 3;
     const MONITORINFOF_PRIMARY: u32 = 1;
 
     pub fn foreground() -> Option<super::Foreground> {
@@ -310,6 +232,79 @@ mod imp {
             .collect()
     }
 
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain([0]).collect()
+    }
+
+    fn hkey(hive: super::Hive) -> HKEY {
+        match hive {
+            super::Hive::User => HKEY_CURRENT_USER,
+            super::Hive::Machine => HKEY_LOCAL_MACHINE,
+        }
+    }
+
+    pub fn reg_string(hive: super::Hive, key: &str, value: &str) -> Option<String> {
+        let (key, value) = (wide(key), wide(value));
+        let mut buf = [0u16; 1024];
+        let mut len = (buf.len() * 2) as u32;
+        let res = unsafe {
+            RegGetValueW(
+                hkey(hive),
+                key.as_ptr(),
+                value.as_ptr(),
+                RRF_RT_REG_SZ,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut len,
+            )
+        };
+        if res != 0 {
+            return None;
+        }
+        let s = String::from_utf16_lossy(&buf[..(len as usize / 2).min(buf.len())]);
+        Some(s.trim_end_matches('\0').to_string())
+    }
+
+    pub fn reg_subkeys(hive: super::Hive, key: &str) -> Vec<String> {
+        let key = wide(key);
+        let mut names = Vec::new();
+        unsafe {
+            let mut hk: HKEY = std::ptr::null_mut();
+            if RegOpenKeyExW(hkey(hive), key.as_ptr(), 0, KEY_READ, &mut hk) != 0 {
+                return names;
+            }
+            for i in 0.. {
+                let mut name = [0u16; 256];
+                let mut len = name.len() as u32;
+                let res = RegEnumKeyExW(
+                    hk,
+                    i,
+                    name.as_mut_ptr(),
+                    &mut len,
+                    std::ptr::null(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                );
+                if res != 0 {
+                    break;
+                }
+                names.push(String::from_utf16_lossy(&name[..len as usize]));
+            }
+            RegCloseKey(hk);
+        }
+        names
+    }
+
+    pub fn fixed_drives() -> Vec<String> {
+        let mask = unsafe { GetLogicalDrives() };
+        (0..26u8)
+            .filter(|i| mask & (1 << i) != 0)
+            .map(|i| format!("{}:\\", (b'A' + i) as char))
+            .filter(|root| unsafe { GetDriveTypeW(wide(root).as_ptr()) } == DRIVE_FIXED)
+            .collect()
+    }
+
     pub fn copy_file_to_clipboard(path: &Path) -> Result<(), String> {
         let wide: Vec<u16> = path.to_string_lossy().encode_utf16().chain([0, 0]).collect();
         let header = std::mem::size_of::<DROPFILES>();
@@ -374,6 +369,15 @@ mod imp {
     pub fn foreground() -> Option<super::Foreground> {
         None
     }
+    pub fn reg_string(_hive: super::Hive, _key: &str, _value: &str) -> Option<String> {
+        None
+    }
+    pub fn reg_subkeys(_hive: super::Hive, _key: &str) -> Vec<String> {
+        Vec::new()
+    }
+    pub fn fixed_drives() -> Vec<String> {
+        Vec::new()
+    }
     pub fn monitors() -> Vec<Monitor> {
         vec![Monitor { index: 0, name: "Main display".into(), width: 1920, height: 1080, primary: true }]
     }
@@ -385,69 +389,5 @@ mod imp {
         if let Some(dir) = path.parent() {
             let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{game_name, looks_like_game, Foreground};
-
-    fn app(exe: &str, path: &str, full_screen: bool) -> Foreground {
-        Foreground { exe: exe.into(), path: path.into(), full_screen, ..Default::default() }
-    }
-
-    #[test]
-    fn games() {
-        assert!(looks_like_game(&app("cs2", "", true), &[]));
-        assert!(!looks_like_game(&app("cs2x", "", false), &[]));
-        assert!(!looks_like_game(&app("Chrome", "", true), &[]));
-        assert!(!looks_like_game(&app("", "", true), &[]));
-    }
-
-    #[test]
-    fn windowed_games() {
-        assert!(looks_like_game(&app("cs2", "", false), &[]));
-        let steam = r"C:\Program Files (x86)\Steam\steamapps\common\Hades\Hades.exe";
-        assert!(looks_like_game(&app("Hades", steam, false), &[]));
-        assert!(!looks_like_game(&app("steamwebhelper", steam, false), &[]));
-        assert!(!looks_like_game(&app("chrome", steam, false), &[]));
-        assert!(looks_like_game(&app("Stardew Valley", "", false), &["stardew valley.exe".into()]));
-        assert!(looks_like_game(&app("mygame", "", false), &["MyGame".into()]));
-    }
-
-    #[test]
-    fn full_screen_apps_that_are_not_games() {
-        for exe in ["Microsoft.Media.Player", "mstsc", "Discord", "WINWORD", "ScreenClippingHost", "Spotify"] {
-            assert!(!looks_like_game(&app(exe, "", true), &[]), "{exe}");
-        }
-        // The user's list wins.
-        assert!(looks_like_game(&app("vlc", "", false), &["vlc".into()]));
-    }
-
-    #[test]
-    fn minecraft_but_not_every_java_app() {
-        let mut mc = app("javaw", "", false);
-        mc.title = "Minecraft* 1.21.1 - Multiplayer (3rd-party Server)".into();
-        assert!(looks_like_game(&mc, &[]));
-        mc.title = "JDownloader 2".into();
-        assert!(!looks_like_game(&mc, &[]));
-    }
-
-    #[test]
-    fn desktop_apps_are_not_games() {
-        let code = r"C:\Users\a\AppData\Local\Programs\Microsoft VS Code\Code.exe";
-        assert!(!looks_like_game(&app("Code", code, false), &[]));
-        assert!(!looks_like_game(&app("notepad", r"C:\Windows\notepad.exe", false), &[]));
-    }
-
-    #[test]
-    fn names() {
-        assert_eq!(game_name("javaw", "Minecraft* 1.21.1 - Multiplayer (3rd-party Server)"), "Minecraft");
-        assert_eq!(game_name("VALORANT-Win64-Shipping", "VALORANT  "), "VALORANT");
-        assert_eq!(game_name("cs2", "Counter-Strike 2"), "Counter-Strike 2");
-        assert_eq!(game_name("x", "Terraria v1.4.4"), "Terraria");
-        assert_eq!(game_name("RocketLeague", ""), "RocketLeague");
-        assert_eq!(game_name("VALORANT-Win64-Shipping", ""), "VALORANT");
-        assert_eq!(game_name("", ""), "Desktop");
     }
 }
