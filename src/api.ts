@@ -43,6 +43,7 @@ export type Settings = {
   micVolume: number;
   micGate: boolean;
   micGateThreshold: number;
+  micDenoise: boolean;
   clipHotkey: string;
   recordHotkey: string;
   clipsDir: string;

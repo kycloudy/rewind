@@ -31,6 +31,8 @@ pub struct Settings {
     pub mic_gate: bool,
     /// Noise gate threshold in dBFS.
     pub mic_gate_threshold: f32,
+    /// Remove steady background noise from the mic with RNNoise.
+    pub mic_denoise: bool,
     pub clip_hotkey: String,
     pub record_hotkey: String,
     pub clips_dir: PathBuf,
@@ -57,6 +59,7 @@ impl Default for Settings {
             mic_volume: 1.0,
             mic_gate: false,
             mic_gate_threshold: -45.0,
+            mic_denoise: false,
             clip_hotkey: "F8".into(),
             record_hotkey: "F9".into(),
             clips_dir: default_clips_dir(),
@@ -119,6 +122,7 @@ impl Settings {
             || (self.mic_volume - other.mic_volume).abs() > f32::EPSILON
             || self.mic_gate != other.mic_gate
             || (self.mic_gate_threshold - other.mic_gate_threshold).abs() > f32::EPSILON
+            || self.mic_denoise != other.mic_denoise
     }
 
     pub fn load(path: &Path) -> Self {

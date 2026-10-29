@@ -1,4 +1,5 @@
 mod audio;
+mod denoise;
 mod ffmpeg;
 mod gate;
 mod library;

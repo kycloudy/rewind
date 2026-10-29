@@ -584,6 +584,7 @@ fn spawn(s: &Settings, encoder: &'static str, pipeline: Pipeline) -> Result<Spaw
                     mic_device: s.mic_device.clone(),
                     mic_volume: s.mic_volume,
                     mic_gate: s.mic_gate.then_some(s.mic_gate_threshold),
+                    mic_denoise: s.mic_denoise,
                 },
             )
         })
