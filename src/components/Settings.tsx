@@ -147,6 +147,25 @@ export function SettingsView({ settings, onSaved, onError }: Props) {
                   <span className="slider-val">{Math.round(draft.micVolume * 100)}%</span>
                 </div>
               </Row>
+              <Row label="Noise gate">
+                <Switch checked={draft.micGate} onChange={(v) => set("micGate", v)} label="Noise gate" />
+              </Row>
+              {draft.micGate && (
+                <Row label="Gate threshold">
+                  <div className="slider-row">
+                    <input
+                      type="range"
+                      min={-80}
+                      max={-10}
+                      step={1}
+                      value={draft.micGateThreshold}
+                      onChange={(e) => set("micGateThreshold", Number(e.target.value))}
+                      aria-label="Gate threshold"
+                    />
+                    <span className="slider-val">{draft.micGateThreshold} dB</span>
+                  </div>
+                </Row>
+              )}
             </>
           )}
         </Group>

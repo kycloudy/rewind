@@ -5,6 +5,7 @@
 //! nothing (WASAPI loopback goes quiet when no sound plays), so FFmpeg never
 //! stalls waiting for audio.
 
+use crate::gate::Gate;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -61,6 +62,8 @@ pub struct AudioConfig {
     pub mic: bool,
     pub mic_device: Option<String>,
     pub mic_volume: f32,
+    /// Noise gate threshold in dBFS. None = gate off.
+    pub mic_gate: Option<f32>,
 }
 
 impl AudioPump {
@@ -125,6 +128,7 @@ fn run<W: Write>(mut out: W, cfg: AudioConfig, stop: Arc<AtomicBool>) {
     let mut mix = Vec::<f32>::new();
     let mut bytes = Vec::<u8>::new();
     let mic_gain = cfg.mic_volume;
+    let mut gate = cfg.mic_gate.map(|db| Gate::new(db, RATE));
 
     while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(10));
@@ -135,8 +139,8 @@ fn run<W: Write>(mut out: W, cfg: AudioConfig, stop: Arc<AtomicBool>) {
         let frames = (due - written) as usize;
         mix.clear();
         mix.resize(frames * 2, 0.0);
-        drain_into(&sys, &mut mix, 1.0, frames);
-        drain_into(&mic, &mut mix, mic_gain, frames);
+        drain_into(&sys, &mut mix, 1.0, frames, None);
+        drain_into(&mic, &mut mix, mic_gain, frames, gate.as_mut());
 
         bytes.clear();
         bytes.reserve(mix.len() * 4);
@@ -154,7 +158,7 @@ fn run<W: Write>(mut out: W, cfg: AudioConfig, stop: Arc<AtomicBool>) {
     drop(streams);
 }
 
-fn drain_into(src: &Mutex<Source>, mix: &mut [f32], gain: f32, frames: usize) {
+fn drain_into(src: &Mutex<Source>, mix: &mut [f32], gain: f32, frames: usize, mut gate: Option<&mut Gate>) {
     let mut s = src.lock();
     // Too much backlog means the device clock runs fast or we stalled: skip ahead.
     let keep = (frames + MAX_BUFFERED_FRAMES) * 2;
@@ -163,8 +167,14 @@ fn drain_into(src: &Mutex<Source>, mix: &mut [f32], gain: f32, frames: usize) {
         s.buf.drain(..extra - extra % 2);
     }
     let n = mix.len().min(s.buf.len());
-    for (m, v) in mix.iter_mut().zip(s.buf.drain(..n)) {
-        *m += v * gain;
+    let mut samples = s.buf.drain(..n);
+    for m in mix[..n].chunks_exact_mut(2) {
+        let mut frame = [samples.next().unwrap_or(0.0), samples.next().unwrap_or(0.0)];
+        if let Some(g) = gate.as_deref_mut() {
+            g.process(&mut frame);
+        }
+        m[0] += frame[0] * gain;
+        m[1] += frame[1] * gain;
     }
 }
 

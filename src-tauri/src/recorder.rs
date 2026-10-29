@@ -547,6 +547,7 @@ fn spawn(
                     mic: s.mic,
                     mic_device: s.mic_device.clone(),
                     mic_volume: s.mic_volume,
+                    mic_gate: s.mic_gate.then_some(s.mic_gate_threshold),
                 },
             )
         })
