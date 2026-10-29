@@ -113,6 +113,11 @@ export const mock = {
         emit("status", status);
         emit("settings", settings);
         return settings;
+      case "running_apps":
+        return [
+          { exe: "cs2", title: "Counter-Strike 2" },
+          { exe: "Hades2", title: "Hades II" },
+        ];
       case "get_devices":
         return {
           monitors: [

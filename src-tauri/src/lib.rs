@@ -80,6 +80,11 @@ fn not_a_game(app: AppHandle, exe: String) -> Result<Settings, String> {
 }
 
 #[tauri::command]
+async fn running_apps() -> Vec<win::RunningApp> {
+    tauri::async_runtime::spawn_blocking(win::running_apps).await.unwrap_or_default()
+}
+
+#[tauri::command]
 async fn get_devices() -> Devices {
     tauri::async_runtime::spawn_blocking(|| {
         let avail = ffmpeg::available_encoders();
@@ -600,6 +605,7 @@ pub fn run() {
             update::check_update,
             update::install_update,
             not_a_game,
+            running_apps,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Rewind")
