@@ -14,7 +14,7 @@ type Props = {
   onToast: (t: Omit<Toast, "id">) => void;
 };
 
-type Job = "copy" | "10" | "50" | null;
+type Job = "copy" | "10" | "25" | "50" | null;
 
 // Volume and mute persist across clips and app restarts.
 const stored = <T,>(key: string, fallback: T): T => {
@@ -297,6 +297,7 @@ export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }
 
           <div className="actions">
             {exportButton("10", "Export 10 MB", "send")}
+            {exportButton("25", "Export 25 MB", "send")}
             {exportButton("50", "Export 50 MB", "send")}
           </div>
 
