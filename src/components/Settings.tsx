@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fetchReleases, type Release } from "../releases";
-import { api, appVersion, openUrl, pickFolder, type Devices, type Seen, type Settings, type UpdateInfo } from "../api";
+import { api, appVersion, openUrl, pickFolder, type Devices, type RunningApp, type Seen, type Settings, type UpdateInfo } from "../api";
 import { keyLabel } from "../format";
 import { Markdown } from "./Markdown";
 
@@ -23,6 +23,7 @@ const CODEC_ORDER: Settings["codec"][] = ["h264", "hevc", "av1"];
 export function SettingsView({ settings, seen, onSaved, onError, update, updating, onCheckUpdate, onInstallUpdate }: Props) {
   const [draft, setDraft] = useState(settings);
   const [devices, setDevices] = useState<Devices | null>(null);
+  const [apps, setApps] = useState<RunningApp[]>([]);
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
   const [releases, setReleases] = useState<Release[] | null>(null);
@@ -87,6 +88,28 @@ export function SettingsView({ settings, seen, onSaved, onError, update, updatin
                 placeholder="game.exe, other.exe"
                 onChange={(e) => set("gameApps", e.target.value.split(",").map((g) => g.trim()).filter(Boolean))}
               />
+            </Row>
+          )}
+          {draft.gamesOnly && (
+            <Row label="Add running app">
+              <select
+                value=""
+                onFocus={() => api.runningApps().then(setApps, () => {})}
+                onChange={(e) => {
+                  const exe = e.target.value;
+                  const same = (g: string) => g.toLowerCase().replace(/\.exe$/, "") === exe.toLowerCase();
+                  if (exe) setDraft((d) => ({ ...d, gameApps: [...d.gameApps, exe], notGames: d.notGames.filter((g) => !same(g)) }));
+                }}
+              >
+                <option value="">Choose an app</option>
+                {apps
+                  .filter((a) => !draft.gameApps.some((g) => g.toLowerCase().replace(/\.exe$/, "") === a.exe.toLowerCase()))
+                  .map((a) => (
+                    <option key={a.exe} value={a.exe}>
+                      {a.exe} ({a.title})
+                    </option>
+                  ))}
+              </select>
             </Row>
           )}
           {draft.gamesOnly && (

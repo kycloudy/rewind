@@ -197,7 +197,7 @@ fn is_version(w: &str) -> bool {
 
 // ---------------------------------------------------------------- launchers
 
-/// Finds the games that Steam, Epic, GOG, Ubisoft Connect and the Xbox app installed.
+/// Finds the games that Steam, Epic, GOG, Ubisoft Connect, the Xbox app, Battle.net, the EA app and Riot installed.
 /// It reads a few small files and registry keys, so call it once a minute at most.
 pub fn scan() -> Vec<Installed> {
     let mut all = steam();
@@ -205,6 +205,9 @@ pub fn scan() -> Vec<Installed> {
     all.extend(gog());
     all.extend(ubisoft());
     all.extend(xbox());
+    all.extend(battle_net());
+    all.extend(ea());
+    all.extend(riot());
     all.sort_by(|a, b| a.dir.cmp(&b.dir));
     all.dedup_by(|a, b| a.dir == b.dir);
     all
@@ -263,6 +266,50 @@ fn ubisoft() -> Vec<Installed> {
             // Ubisoft keeps no name here. The folder is named after the game.
             let name = Path::new(dir.trim_end_matches(['/', '\\'])).file_name()?.to_string_lossy().into_owned();
             Installed::new(&name, &dir)
+        })
+        .collect()
+}
+
+/// Battle.net games. Each one adds an uninstall entry published by Blizzard.
+fn battle_net() -> Vec<Installed> {
+    const KEY: &str = r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
+    win::reg_subkeys(Hive::Machine, KEY)
+        .iter()
+        .filter_map(|id| {
+            let key = format!(r"{KEY}\{id}");
+            let publisher = win::reg_string(Hive::Machine, &key, "Publisher")?;
+            let name = win::reg_string(Hive::Machine, &key, "DisplayName")?;
+            if !publisher.starts_with("Blizzard Entertainment") || name.starts_with("Battle.net") {
+                return None;
+            }
+            Installed::new(&name, &win::reg_string(Hive::Machine, &key, "InstallLocation")?)
+        })
+        .collect()
+}
+
+/// EA app games. Each one has a key named after the game, with its install folder.
+fn ea() -> Vec<Installed> {
+    const KEY: &str = r"SOFTWARE\WOW6432Node\EA Games";
+    win::reg_subkeys(Hive::Machine, KEY)
+        .iter()
+        .filter_map(|name| {
+            let dir = win::reg_string(Hive::Machine, &format!(r"{KEY}\{name}"), "Install Dir")?;
+            Installed::new(name, &dir)
+        })
+        .collect()
+}
+
+/// Riot games. The Riot Client keeps one settings file for each game.
+fn riot() -> Vec<Installed> {
+    let data = std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"));
+    let Ok(entries) = fs::read_dir(data.join(r"Riot Games\Metadata")) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            parse_riot(&fs::read_to_string(e.path().join(format!("{name}.product_settings.yaml"))).ok()?)
         })
         .collect()
 }
@@ -349,6 +396,14 @@ fn parse_epic(text: &str) -> Option<Installed> {
         }
     }
     Installed::new(v["DisplayName"].as_str()?, v["InstallLocation"].as_str()?)
+}
+
+/// A Riot `product_settings.yaml` file. The folder is named after the game.
+fn parse_riot(text: &str) -> Option<Installed> {
+    let line = text.lines().find_map(|l| l.trim().strip_prefix("product_install_full_path:"))?;
+    let dir = line.trim().trim_matches(['"', '\'']);
+    let name = Path::new(dir.trim_end_matches(['/', '\\'])).file_name()?.to_string_lossy().into_owned();
+    Installed::new(&name, dir)
 }
 
 /// Folders, relative to the drive root, listed in a `.GamingRoot` file:
@@ -511,6 +566,13 @@ mod tests {
         assert_eq!(parse_epic(game), Installed::new("Fortnite", r"C:\Program Files\Epic Games\Fortnite"));
         let engine = r#"{"DisplayName":"Unreal Engine","InstallLocation":"C:\\UE_5.4","AppCategories":["engines"]}"#;
         assert_eq!(parse_epic(engine), None);
+    }
+
+    #[test]
+    fn riot_settings() {
+        let yaml = "package_version: 1\nproduct_install_full_path: \"C:/Riot Games/VALORANT\"\nsettings: {}\n";
+        assert_eq!(parse_riot(yaml), Installed::new("VALORANT", r"C:\Riot Games\VALORANT"));
+        assert_eq!(parse_riot("settings: {}"), None);
     }
 
     #[test]

@@ -74,6 +74,8 @@ export type Devices = {
   encoders: { name: string; label: string; codec: "h264" | "hevc" | "av1"; vendor: string }[];
 };
 
+export type RunningApp = { exe: string; title: string };
+
 export type UpdateInfo = { current: string; available: string | null };
 
 /** True inside the desktop app. In a plain browser the UI runs on sample data. */
@@ -101,6 +103,7 @@ export const api = {
   settings: () => call<Settings>("get_settings"),
   saveSettings: (settings: Settings) => call<Settings>("save_settings", { settings }),
   notAGame: (exe: string) => call<Settings>("not_a_game", { exe }),
+  runningApps: () => call<RunningApp[]>("running_apps"),
   devices: () => call<Devices>("get_devices"),
   clips: () => call<Clip[]>("list_clips"),
   saveClip: () => call<Clip>("save_clip"),

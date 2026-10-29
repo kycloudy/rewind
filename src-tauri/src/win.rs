@@ -33,6 +33,20 @@ pub fn foreground() -> Option<Foreground> {
     imp::foreground()
 }
 
+/// An app with a visible window.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunningApp {
+    /// Exe file name without ".exe", e.g. "cs2".
+    pub exe: String,
+    /// Title of the app's first window.
+    pub title: String,
+}
+
+/// Apps that have a visible window, one entry for each exe.
+pub fn running_apps() -> Vec<RunningApp> {
+    imp::running_apps()
+}
+
 /// A registry root.
 #[derive(Clone, Copy)]
 pub enum Hive {
@@ -115,7 +129,7 @@ pub fn chime_wav(rising: bool) -> Vec<u8> {
 
 #[cfg(any(windows, wincheck))]
 mod imp {
-    use super::Monitor;
+    use super::{Monitor, RunningApp};
     use std::path::Path;
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{CloseHandle, GlobalFree, HWND, LPARAM, RECT};
@@ -138,8 +152,8 @@ mod imp {
     };
     use windows_sys::Win32::UI::Shell::DROPFILES;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
-        GWL_STYLE, WS_CAPTION,
+        EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowRect, GetWindowTextW,
+        GetWindowThreadProcessId, IsWindowVisible, GWL_EXSTYLE, GWL_STYLE, WS_CAPTION, WS_EX_TOOLWINDOW,
     };
 
     const CF_HDROP: u32 = 15;
@@ -195,6 +209,44 @@ mod imp {
             };
             Some(super::Foreground { exe, title, path, monitor, full_screen })
         }
+    }
+
+    unsafe extern "system" fn window_cb(hwnd: HWND, data: LPARAM) -> i32 {
+        let apps = &mut *(data as *mut Vec<RunningApp>);
+        if IsWindowVisible(hwnd) == 0 || GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW != 0 {
+            return 1;
+        }
+        let mut title = [0u16; 256];
+        let n = GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32);
+        if n <= 0 {
+            return 1;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        let proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if proc.is_null() {
+            return 1;
+        }
+        let mut buf = [0u16; 520];
+        let mut len = buf.len() as u32;
+        if QueryFullProcessImageNameW(proc, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0 {
+            let path = String::from_utf16_lossy(&buf[..len as usize]);
+            if let Some(exe) = Path::new(&path).file_stem().map(|s| s.to_string_lossy().into_owned()) {
+                if !apps.iter().any(|a| a.exe.eq_ignore_ascii_case(&exe)) {
+                    apps.push(RunningApp { exe, title: String::from_utf16_lossy(&title[..n as usize]) });
+                }
+            }
+        }
+        CloseHandle(proc);
+        1
+    }
+
+    pub fn running_apps() -> Vec<RunningApp> {
+        let mut apps: Vec<RunningApp> = Vec::new();
+        unsafe {
+            EnumWindows(Some(window_cb), &mut apps as *mut _ as LPARAM);
+        }
+        apps
     }
 
     pub fn processes() -> Vec<String> {
@@ -426,11 +478,14 @@ mod imp {
 
 #[cfg(not(any(windows, wincheck)))]
 mod imp {
-    use super::Monitor;
+    use super::{Monitor, RunningApp};
     use std::path::Path;
 
     pub fn foreground() -> Option<super::Foreground> {
         None
+    }
+    pub fn running_apps() -> Vec<RunningApp> {
+        Vec::new()
     }
     pub fn reg_string(_hive: super::Hive, _key: &str, _value: &str) -> Option<String> {
         None
