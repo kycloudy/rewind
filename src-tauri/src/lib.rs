@@ -3,6 +3,7 @@ mod ffmpeg;
 mod gate;
 mod library;
 mod recorder;
+mod ring;
 mod settings;
 mod win;
 
