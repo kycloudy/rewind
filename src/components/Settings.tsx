@@ -70,6 +70,16 @@ export function SettingsView({ settings, onSaved, onError, update, updating, onC
               />
             </Row>
           )}
+          {draft.gamesOnly && (
+            <Row label="Not games">
+              <input
+                type="text"
+                value={draft.notGames.join(", ")}
+                placeholder="app.exe, other.exe"
+                onChange={(e) => set("notGames", e.target.value.split(",").map((g) => g.trim()).filter(Boolean))}
+              />
+            </Row>
+          )}
           <Row label="Clip length">
             <Segmented
               value={String(draft.clipSeconds)}
@@ -191,6 +201,9 @@ export function SettingsView({ settings, onSaved, onError, update, updating, onC
                   />
                   <span className="slider-val">{Math.round(draft.micVolume * 100)}%</span>
                 </div>
+              </Row>
+              <Row label="Noise suppression">
+                <Switch checked={draft.micDenoise} onChange={(v) => set("micDenoise", v)} label="Noise suppression" />
               </Row>
               <Row label="Noise gate">
                 <Switch checked={draft.micGate} onChange={(v) => set("micGate", v)} label="Noise gate" />

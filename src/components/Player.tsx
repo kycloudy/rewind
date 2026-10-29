@@ -14,22 +14,81 @@ type Props = {
   onToast: (t: Omit<Toast, "id">) => void;
 };
 
-type Job = "trim" | "10" | "50" | null;
+type Job = "copy" | "10" | "25" | "50" | null;
+
+// Volume and mute persist across clips and app restarts.
+const stored = <T,>(key: string, fallback: T): T => {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : (JSON.parse(v) as T);
+  } catch {
+    return fallback;
+  }
+};
+const store = (key: string, value: unknown) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+};
 
 export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
-  const [muted, setMuted] = useState(false);
-  const [time, setTime] = useState(0);
+  const [muted, setMuted] = useState(() => stored("player.muted", false));
+  const [volume, setVolume] = useState(() => stored("player.volume", 1));
+  const [time, setTime] = useState(clip.trim?.start ?? 0);
   const [dur, setDur] = useState(clip.duration || 1);
-  const [range, setRange] = useState<[number, number]>([0, clip.duration || 1]);
+  const [range, setRange] = useState<[number, number]>(
+    clip.trim ? [clip.trim.start, clip.trim.end] : [0, clip.duration || 1],
+  );
   const [strip, setStrip] = useState<string | null>(null);
   const [title, setTitle] = useState(clip.title);
   const [job, setJob] = useState<Job>(null);
   const [progress, setProgress] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  const silent = muted || volume === 0;
+
+  useEffect(() => {
+    if (video.current) video.current.volume = volume;
+    store("player.volume", volume);
+  }, [volume]);
+
+  useEffect(() => store("player.muted", muted), [muted]);
+
+  const changeVolume = (v: number) => {
+    setVolume(v);
+    if (v > 0) setMuted(false);
+  };
+
+  const toggleMute = () => {
+    if (volume === 0) changeVolume(1);
+    else setMuted((m) => !m);
+  };
+
   const trimmed = range[0] > 0.05 || range[1] < dur - 0.05;
+
+  // Save the trim on the clip a moment after the last change. The file stays whole.
+  const saved = useRef(clip.trim);
+  const latest = useRef({ clip, onChange, onToast });
+  latest.current = { clip, onChange, onToast };
+  const trim = trimmed ? { start: range[0], end: range[1] } : null;
+  const saveTrim = useRef<() => Promise<void>>(async () => {});
+  saveTrim.current = async () => {
+    const s = saved.current;
+    if (s?.start === trim?.start && s?.end === trim?.end) return;
+    saved.current = trim;
+    try {
+      latest.current.onChange(await api.setTrim(clip.id, trim));
+    } catch (e) {
+      latest.current.onToast({ text: String(e), error: true });
+    }
+  };
+  useEffect(() => {
+    const t = setTimeout(() => saveTrim.current(), 400);
+    return () => clearTimeout(t);
+  }, [range[0], range[1], trimmed]);
+  useEffect(() => () => void saveTrim.current(), []);
 
   useEffect(() => {
     api.filmstrip(clip.id).then((p) => setStrip(fileUrl(p)), () => setStrip(null));
@@ -52,7 +111,7 @@ export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }
     } else v.pause();
   };
 
-  // Keyboard: Space play, I/O set trim points, J/L skip 5 s, Esc back.
+  // Keyboard: Space play, I/O set trim points, J/L skip 5 s, M mute, Esc back.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
@@ -65,6 +124,7 @@ export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }
       else if (e.key === "o") setRange(([s]) => [s, Math.max(t, s + 0.5)]);
       else if (e.key === "j") seek(Math.max(0, t - 5));
       else if (e.key === "l") seek(Math.min(dur, t + 5));
+      else if (e.key === "m") toggleMute();
       else if (e.key === "Escape") onBack();
     };
     window.addEventListener("keydown", onKey);
@@ -86,8 +146,11 @@ export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }
     setJob(kind);
     setProgress(0);
     try {
-      const target = kind === "trim" ? null : Number(kind);
-      onCreated(await api.exportClip(clip.id, range[0], range[1], target));
+      if (kind === "copy") {
+        await saveTrim.current();
+        await api.copy(clip.id);
+        onToast({ text: trimmed ? "Copied the trimmed part. Paste it into Discord or a folder." : "Copied. Paste it into Discord or a folder." });
+      } else onCreated(await api.exportClip(clip.id, range[0], range[1], Number(kind)));
     } catch (e) {
       onToast({ text: String(e), error: true });
     } finally {
@@ -104,10 +167,10 @@ export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }
     }
   };
 
-  const exportButton = (kind: Exclude<Job, null>, label: string, icon: string, disabled = false) => (
-    <button className={`btn action${job === kind ? " is-busy" : ""}`} disabled={!!job || disabled} onClick={() => runExport(kind)}>
+  const exportButton = (kind: Exclude<Job, null>, label: string, icon: string) => (
+    <button className={`btn action${job === kind ? " is-busy" : ""}`} disabled={!!job} onClick={() => runExport(kind)}>
       <Icon name={icon} size={16} />
-      <span>{job === kind ? `Exporting ${Math.round(progress * 100)}%` : label}</span>
+      <span>{job === kind ? `${kind === "copy" ? "Copying" : "Exporting"} ${Math.round(progress * 100)}%` : label}</span>
       {job === kind && <span className="action-progress" style={{ width: `${progress * 100}%` }} />}
     </button>
   );
@@ -159,6 +222,7 @@ export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }
                   setDur(d);
                   setRange(([s, en]) => [s, Math.min(en, d)]);
                 }
+                e.currentTarget.currentTime = range[0];
               }}
               onTimeUpdate={(e) => {
                 const v = e.currentTarget;
@@ -181,9 +245,21 @@ export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }
             <span className="transport-time">
               {precise(time)} <span className="dim">/ {fmtDuration(dur)}</span>
             </span>
-            <button className="btn btn-icon" onClick={() => setMuted((m) => !m)} aria-label={muted ? "Unmute" : "Mute"}>
-              <Icon name={muted ? "mute" : "volume"} />
-            </button>
+            <div className="volume">
+              <button className="btn btn-icon" onClick={toggleMute} aria-label={silent ? "Unmute" : "Mute"} title="Mute (M)">
+                <Icon name={silent ? "mute" : "volume"} />
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={muted ? 0 : volume}
+                onChange={(e) => changeVolume(Number(e.target.value))}
+                aria-label="Volume"
+                aria-valuetext={`${Math.round((muted ? 0 : volume) * 100)}%`}
+              />
+            </div>
           </div>
 
           <Trimmer
@@ -220,23 +296,20 @@ export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }
           </dl>
 
           <div className="actions">
-            {exportButton("trim", "Save trimmed copy", "scissors", !trimmed)}
             {exportButton("10", "Export 10 MB", "send")}
+            {exportButton("25", "Export 25 MB", "send")}
             {exportButton("50", "Export 50 MB", "send")}
           </div>
 
           <div className="actions">
-            <button className="btn action" onClick={() => act(() => api.copy(clip.id), "Copied. Paste it into Discord or a folder.")}>
-              <Icon name="copy" size={16} />
-              <span>Copy file</span>
-            </button>
+            {exportButton("copy", "Copy file", "copy")}
             <button className="btn action" onClick={() => act(() => api.reveal(clip.id))}>
               <Icon name="folder" size={16} />
               <span>Show in folder</span>
             </button>
             <button
               className={`btn action action-danger${confirmDelete ? " is-armed" : ""}`}
-              onClick={() => (confirmDelete ? act(async () => (await api.remove(clip.id), onDeleted(clip.id))) : setConfirmDelete(true))}
+              onClick={() => (confirmDelete ? act(async () => ((saved.current = trim), await api.remove(clip.id), onDeleted(clip.id))) : setConfirmDelete(true))}
               onBlur={() => setConfirmDelete(false)}
             >
               <Icon name="trash" size={16} />

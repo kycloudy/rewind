@@ -10,6 +10,7 @@
 
 use crate::audio::{AudioConfig, AudioPump};
 use crate::ffmpeg::{self, Vendor};
+use crate::games::{self, Installed};
 use crate::library::{self, Clip, Library};
 use crate::ring::{self, Ring};
 use crate::settings::Settings;
@@ -32,6 +33,21 @@ const START_GRACE: Duration = Duration::from_secs(6);
 /// In games-only mode, keep capturing this long after the game leaves the
 /// foreground, so a quick alt-tab does not wipe the buffer.
 const GAME_LINGER: Duration = Duration::from_secs(60);
+/// An app must look like a game for this long before capture starts.
+const GAME_DWELL: Duration = Duration::from_secs(3);
+/// How often to look for newly installed games.
+const GAME_SCAN_EVERY: Duration = Duration::from_secs(60);
+
+/// The game that keeps capture on.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Game {
+    pub name: String,
+    /// Exe file name without ".exe".
+    pub exe: String,
+    /// True when only the full-screen test matched, so the app may not be a game.
+    pub guessed: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +55,7 @@ pub struct Status {
     pub buffering: bool,
     /// Games-only mode is on and no game is in front, so capture is paused.
     pub waiting_for_game: bool,
+    pub game: Option<Game>,
     pub recording: bool,
     /// Unix ms when the current recording started.
     pub recording_since: Option<i64>,
@@ -86,9 +103,12 @@ struct Inner {
     next_run_id: u64,
     session: Option<Session>,
     status: Status,
+    /// The last game in the foreground. Clips are named after it.
     last_game: Option<String>,
-    /// When a full-screen game was last in the foreground.
+    /// When a game was last in the foreground.
     game_seen: Option<Instant>,
+    /// The app that looks like a game now, and since when.
+    candidate: Option<(String, Instant)>,
     restarts: u32,
 }
 
@@ -106,6 +126,8 @@ pub struct Recorder {
     thumbs_dir: PathBuf,
     library: Arc<Library>,
     inner: Mutex<Inner>,
+    /// Games that launchers installed.
+    installed: Mutex<Arc<Vec<Installed>>>,
     saving: AtomicBool,
     listener: Mutex<Option<Listener>>,
 }
@@ -127,8 +149,10 @@ impl Recorder {
                 session: None,
                 last_game: None,
                 game_seen: None,
+                candidate: None,
                 restarts: 0,
             }),
+            installed: Mutex::new(Arc::new(Vec::new())),
             saving: AtomicBool::new(false),
             listener: Mutex::new(None),
         });
@@ -144,6 +168,18 @@ impl Recorder {
                     Some(r) => r.tick(),
                     None => break,
                 }
+            })
+            .ok();
+        let weak = Arc::downgrade(&rec);
+        std::thread::Builder::new()
+            .name("game-scan".into())
+            .spawn(move || loop {
+                let found = Arc::new(games::scan());
+                match weak.upgrade() {
+                    Some(r) => *r.installed.lock() = found,
+                    None => break,
+                }
+                std::thread::sleep(GAME_SCAN_EVERY);
             })
             .ok();
         rec
@@ -230,21 +266,43 @@ impl Recorder {
 
     /// Runs every 500 ms: watches FFmpeg, writes session chunks, tracks the game.
     fn tick(&self) {
+        let installed = self.installed.lock().clone();
         let mut inner = self.inner.lock();
         let mut changed = false;
 
-        if let Some((exe, title, path)) = win::foreground_app() {
+        if let Some(fg) = win::foreground() {
             let me = std::env::current_exe()
                 .ok()
-                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_lowercase()))
+                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
                 .unwrap_or_default();
-            let exe_l = exe.to_lowercase();
-            if !exe.is_empty() && exe_l != me && exe_l != "explorer" && exe_l != "searchhost" {
-                inner.last_game = Some(win::game_name(&exe, &title));
-                if win::looks_like_game(&exe, &path, win::foreground_full_screen(), &inner.settings.game_apps) {
+            let game = (!fg.exe.eq_ignore_ascii_case(&me) && fg.monitor == Some(inner.settings.monitor))
+                .then(|| games::detect(&fg, &installed, &inner.settings.game_apps, &inner.settings.not_games))
+                .flatten();
+            if let Some(game) = game {
+                // A new match must hold for a moment, so a short full-screen video or overlay does not start capture.
+                let since = match &inner.candidate {
+                    Some((exe, t)) if *exe == fg.exe => *t,
+                    _ => Instant::now(),
+                };
+                inner.candidate = Some((fg.exe.clone(), since));
+                let capturing = inner.game_seen.is_some_and(|t| t.elapsed() < GAME_LINGER);
+                if capturing || since.elapsed() >= GAME_DWELL {
+                    let now = Game { name: game.name.clone(), exe: fg.exe.clone(), guessed: game.guessed };
+                    if inner.status.game.as_ref() != Some(&now) {
+                        inner.status.game = Some(now);
+                        changed = true;
+                    }
+                    inner.last_game = Some(game.name);
                     inner.game_seen = Some(Instant::now());
                 }
+            } else {
+                inner.candidate = None;
             }
+        }
+
+        if inner.status.game.is_some() && !inner.game_seen.is_some_and(|t| t.elapsed() < GAME_LINGER) {
+            inner.status.game = None;
+            changed = true;
         }
 
         // Games-only mode: start when a game comes to the front, pause when none has been there for a while.
@@ -287,6 +345,21 @@ impl Recorder {
         if changed {
             self.emit(st);
         }
+    }
+
+    /// Stops treating `exe` as the current game, so games-only mode pauses at once.
+    pub fn forget_game(&self, exe: &str) {
+        let mut inner = self.inner.lock();
+        if !inner.status.game.as_ref().is_some_and(|g| g.exe.eq_ignore_ascii_case(exe)) || inner.session.is_some() {
+            return;
+        }
+        inner.status.game = None;
+        inner.game_seen = None;
+        inner.candidate = None;
+        inner.last_game = None;
+        let st = inner.status.clone();
+        drop(inner);
+        self.emit(st);
     }
 
     fn current_game(&self) -> String {
@@ -390,6 +463,7 @@ impl Recorder {
             duration,
             favorite: false,
             kind: kind.into(),
+            trim: None,
         };
         self.library.add(clip.clone());
         Ok(clip)
@@ -584,6 +658,7 @@ fn spawn(s: &Settings, encoder: &'static str, pipeline: Pipeline) -> Result<Spaw
                     mic_device: s.mic_device.clone(),
                     mic_volume: s.mic_volume,
                     mic_gate: s.mic_gate.then_some(s.mic_gate_threshold),
+                    mic_denoise: s.mic_denoise,
                 },
             )
         })

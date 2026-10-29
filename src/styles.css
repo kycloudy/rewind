@@ -643,6 +643,17 @@ select,
   gap: 8px;
 }
 
+.volume {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.volume input {
+  width: 96px;
+  accent-color: var(--ice);
+}
+
 .transport-time {
   flex: 1;
   font-size: var(--fs-sm);
