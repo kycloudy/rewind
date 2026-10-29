@@ -19,9 +19,12 @@ export type Clip = {
 
 export type Trim = { start: number; end: number };
 
+export type Game = { name: string; exe: string; guessed: boolean };
+
 export type Status = {
   buffering: boolean;
   waitingForGame: boolean;
+  game: Game | null;
   recording: boolean;
   recordingSince: number | null;
   encoder: string | null;
@@ -34,6 +37,7 @@ export type Settings = {
   bufferEnabled: boolean;
   gamesOnly: boolean;
   gameApps: string[];
+  notGames: string[];
   clipSeconds: number;
   fps: number;
   quality: "low" | "medium" | "high" | "ultra";
@@ -84,6 +88,7 @@ export const api = {
   status: () => call<Status>("get_status"),
   settings: () => call<Settings>("get_settings"),
   saveSettings: (settings: Settings) => call<Settings>("save_settings", { settings }),
+  notAGame: (exe: string) => call<Settings>("not_a_game", { exe }),
   devices: () => call<Devices>("get_devices"),
   clips: () => call<Clip[]>("list_clips"),
   saveClip: () => call<Clip>("save_clip"),

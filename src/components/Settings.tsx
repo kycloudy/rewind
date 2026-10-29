@@ -65,6 +65,16 @@ export function SettingsView({ settings, onSaved, onError }: Props) {
               />
             </Row>
           )}
+          {draft.gamesOnly && (
+            <Row label="Not games">
+              <input
+                type="text"
+                value={draft.notGames.join(", ")}
+                placeholder="app.exe, other.exe"
+                onChange={(e) => set("notGames", e.target.value.split(",").map((g) => g.trim()).filter(Boolean))}
+              />
+            </Row>
+          )}
           <Row label="Clip length">
             <Segmented
               value={String(draft.clipSeconds)}

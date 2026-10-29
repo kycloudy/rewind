@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, on, type Clip, type Settings, type Status } from "./api";
 import { Sidebar } from "./components/Sidebar";
 import { Library, type Filter } from "./components/Library";
@@ -38,9 +38,22 @@ export function App() {
         });
       }),
       on<string>("notice", (text) => toast({ text, error: true })),
+      on<Settings>("settings", setSettings),
     ];
     return () => offs.forEach((f) => f());
   }, [refresh, toast]);
+
+  // The first time a full-screen guess starts capture, offer to undo it.
+  const offered = useRef(new Set<string>());
+  const guess = status?.game?.guessed && settings?.gamesOnly ? status.game : null;
+  useEffect(() => {
+    if (!guess || offered.current.has(guess.exe)) return;
+    offered.current.add(guess.exe);
+    toast({
+      text: `Capturing ${guess.name}`,
+      action: { label: "Not a game", run: () => runAction(async () => setSettings(await api.notAGame(guess.exe))) },
+    });
+  }, [guess?.exe]);
 
   const update = useCallback((c: Clip) => setClips((cs) => cs.map((x) => (x.id === c.id ? c : x))), []);
   const removed = useCallback((id: string) => setClips((cs) => cs.filter((x) => x.id !== id)), []);

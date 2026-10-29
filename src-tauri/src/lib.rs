@@ -1,5 +1,6 @@
 mod audio;
 mod ffmpeg;
+mod games;
 mod gate;
 mod library;
 mod recorder;
@@ -29,6 +30,7 @@ struct AppState {
     /// Short-lived trimmed copies made for the clipboard.
     shares_dir: PathBuf,
     record_item: Mutex<Option<MenuItem<tauri::Wry>>>,
+    not_game_item: Mutex<Option<MenuItem<tauri::Wry>>>,
 }
 
 type S<'a> = State<'a, AppState>;
@@ -68,6 +70,11 @@ fn save_settings(app: AppHandle, state: S, settings: Settings) -> Result<Setting
     let s = settings.clone();
     std::thread::spawn(move || rec.apply(s, false));
     Ok(settings)
+}
+
+#[tauri::command]
+fn not_a_game(app: AppHandle, exe: String) -> Result<Settings, String> {
+    mark_not_a_game(&app, &exe)
 }
 
 #[tauri::command]
@@ -326,6 +333,28 @@ async fn export_clip(app: AppHandle, state: S<'_>, req: ExportRequest) -> Result
 
 // ---------------------------------------------------------------- actions
 
+/// Adds `exe` to the "Not games" list and pauses capture if it was the game.
+fn mark_not_a_game(app: &AppHandle, exe: &str) -> Result<Settings, String> {
+    if exe.trim().is_empty() {
+        return Err("No app to mark".into());
+    }
+    let state = app.state::<AppState>();
+    let settings = {
+        let mut s = state.settings.lock();
+        s.add_not_game(exe);
+        s.save(&state.settings_file).map_err(|e| e.to_string())?;
+        s.clone()
+    };
+    let rec = state.recorder.clone();
+    let (s, exe) = (settings.clone(), exe.to_string());
+    std::thread::spawn(move || {
+        rec.apply(s, false);
+        rec.forget_game(&exe);
+    });
+    let _ = app.emit("settings", &settings);
+    Ok(settings)
+}
+
 async fn do_save_clip(app: AppHandle) -> Result<Clip, String> {
     let rec = app.state::<AppState>().recorder.clone();
     let sound = app.state::<AppState>().settings.lock().clip_sound;
@@ -422,10 +451,13 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Rewind", true, None::<&str>)?;
     let clip = MenuItem::with_id(app, "clip", "Save clip", true, None::<&str>)?;
     let record = MenuItem::with_id(app, "record", "Start recording", true, None::<&str>)?;
+    let not_game = MenuItem::with_id(app, "not_game", "Not a game", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&open, &clip, &record, &sep, &quit])?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&open, &clip, &record, &sep, &not_game, &sep2, &quit])?;
     *app.state::<AppState>().record_item.lock() = Some(record);
+    *app.state::<AppState>().not_game_item.lock() = Some(not_game);
 
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().cloned().expect("app icon"))
@@ -445,6 +477,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 tauri::async_runtime::spawn(async move {
                     let _ = do_toggle_recording(app).await;
                 });
+            }
+            "not_game" => {
+                let exe = app.state::<AppState>().recorder.status().game.map(|g| g.exe);
+                if let Some(exe) = exe {
+                    let _ = mark_not_a_game(app, &exe);
+                }
             }
             "quit" => {
                 app.state::<AppState>().recorder.shutdown();
@@ -496,8 +534,16 @@ pub fn run() {
                         };
                         let _ = tray.set_tooltip(Some(tip));
                     }
-                    if let Some(item) = handle.state::<AppState>().record_item.lock().as_ref() {
+                    let state = handle.state::<AppState>();
+                    if let Some(item) = state.record_item.lock().as_ref() {
                         let _ = item.set_text(if st.recording { "Stop recording" } else { "Start recording" });
+                    }
+                    if let Some(item) = state.not_game_item.lock().as_ref() {
+                        let _ = match &st.game {
+                            Some(g) => item.set_text(format!("{} is not a game", g.name)),
+                            None => item.set_text("Not a game"),
+                        };
+                        let _ = item.set_enabled(st.game.is_some() && !st.recording);
                     }
                     let _ = handle.emit("status", st);
                 });
@@ -510,6 +556,7 @@ pub fn run() {
                 recorder: recorder.clone(),
                 shares_dir,
                 record_item: Mutex::new(None),
+                not_game_item: Mutex::new(None),
             });
 
             build_tray(&handle)?;
@@ -546,6 +593,7 @@ pub fn run() {
             set_trim,
             filmstrip,
             export_clip,
+            not_a_game,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Rewind")

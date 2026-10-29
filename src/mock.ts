@@ -52,6 +52,7 @@ let settings: Settings = {
   bufferEnabled: true,
   gamesOnly: true,
   gameApps: [],
+  notGames: [],
   clipSeconds: 30,
   fps: 60,
   quality: "high",
@@ -75,6 +76,7 @@ let settings: Settings = {
 let status: Status = {
   buffering: true,
   waitingForGame: false,
+  game: { name: "VALORANT", exe: "VALORANT-Win64-Shipping", guessed: false },
   recording: false,
   recordingSince: null,
   encoder: "NVIDIA NVENC",
@@ -103,6 +105,12 @@ export const mock = {
         settings = a.settings;
         status = { ...status, buffering: settings.bufferEnabled, clipSeconds: settings.clipSeconds };
         emit("status", status);
+        return settings;
+      case "not_a_game":
+        settings = { ...settings, notGames: [...settings.notGames, a.exe] };
+        status = { ...status, game: null, buffering: false, waitingForGame: true };
+        emit("status", status);
+        emit("settings", settings);
         return settings;
       case "get_devices":
         return {
