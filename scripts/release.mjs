@@ -16,9 +16,7 @@ function version() {
 function config() {
   const out = { version: version() };
   if (env.TAURI_SIGNING_PRIVATE_KEY) {
-    if (!env.TAURI_UPDATER_PUBKEY) fail("TAURI_UPDATER_PUBKEY is not set. Add the public key as a repository secret.");
     out.bundle = { createUpdaterArtifacts: true };
-    out.plugins = { updater: { pubkey: env.TAURI_UPDATER_PUBKEY.trim() } };
   } else {
     console.log("::warning::TAURI_SIGNING_PRIVATE_KEY is not set. This build cannot update itself in the app.");
   }
