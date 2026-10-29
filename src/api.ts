@@ -37,6 +37,8 @@ export type Settings = {
   mic: boolean;
   micDevice: string | null;
   micVolume: number;
+  micGate: boolean;
+  micGateThreshold: number;
   clipHotkey: string;
   recordHotkey: string;
   clipsDir: string;

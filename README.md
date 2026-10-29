@@ -7,7 +7,7 @@ Rewind is a small gameplay clipping app for Windows. It keeps the last 30 second
 - **Instant replay.** F8 saves the last 15 s to 5 min. The clip includes the moment you pressed the key.
 - **Session recording.** F9 starts and stops a full recording. It uses the same capture, so it adds no extra GPU load.
 - **GPU capture.** Rewind captures with Desktop Duplication and encodes on your GPU (NVIDIA NVENC, AMD AMF, or Intel Quick Sync). If no GPU encoder works, it uses the CPU (x264).
-- **Game and microphone audio.** Rewind records system sound and, if you turn it on, your microphone.
+- **Game and microphone audio.** Rewind records system sound and, if you turn it on, your microphone. A noise gate can mute the microphone while you do not speak.
 - **Game detection.** Rewind names and sorts each clip by the game in the foreground.
 - **Library.** Clips are grouped by day and by game. You can search, add favorites, and rename clips.
 - **Trimmer.** Drag the handles on the frame strip, or press **I** and **O** to set the start and end.
@@ -56,6 +56,7 @@ WASAPI loopback + mic ──► Rust mixer (48 kHz) ──► FFmpeg stdin ─�
 | --- | --- |
 | `src-tauri/src/recorder.rs` | Capture process, ring buffer, clip save, recording, restarts |
 | `src-tauri/src/audio.rs` | System and mic capture, resampling, mixing |
+| `src-tauri/src/gate.rs` | Microphone noise gate |
 | `src-tauri/src/ffmpeg.rs` | Encoder detection, join, thumbnails, export |
 | `src-tauri/src/win.rs` | Foreground game, displays, clipboard, sound |
 | `src-tauri/src/lib.rs` | Commands, hotkeys, tray, settings |

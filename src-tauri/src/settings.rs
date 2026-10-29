@@ -21,6 +21,10 @@ pub struct Settings {
     /// None = Windows default input device.
     pub mic_device: Option<String>,
     pub mic_volume: f32,
+    /// Mute the mic while it is quieter than `mic_gate_threshold`.
+    pub mic_gate: bool,
+    /// Noise gate threshold in dBFS.
+    pub mic_gate_threshold: f32,
     pub clip_hotkey: String,
     pub record_hotkey: String,
     pub clips_dir: PathBuf,
@@ -42,6 +46,8 @@ impl Default for Settings {
             mic: false,
             mic_device: None,
             mic_volume: 1.0,
+            mic_gate: false,
+            mic_gate_threshold: -45.0,
             clip_hotkey: "F8".into(),
             record_hotkey: "F9".into(),
             clips_dir: default_clips_dir(),
@@ -90,6 +96,8 @@ impl Settings {
             || self.mic != other.mic
             || self.mic_device != other.mic_device
             || (self.mic_volume - other.mic_volume).abs() > f32::EPSILON
+            || self.mic_gate != other.mic_gate
+            || (self.mic_gate_threshold - other.mic_gate_threshold).abs() > f32::EPSILON
     }
 
     pub fn load(path: &Path) -> Self {
@@ -100,6 +108,7 @@ impl Settings {
         s.clip_seconds = s.clip_seconds.clamp(5, 300);
         s.fps = if s.fps >= 45 { 60 } else { 30 };
         s.mic_volume = s.mic_volume.clamp(0.0, 2.0);
+        s.mic_gate_threshold = s.mic_gate_threshold.clamp(-80.0, -10.0);
         if s.clips_dir.as_os_str().is_empty() {
             s.clips_dir = default_clips_dir();
         }

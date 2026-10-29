@@ -955,7 +955,7 @@ select {
 }
 
 .slider-val {
-  width: 42px;
+  width: 52px;
   text-align: right;
   font-size: var(--fs-sm);
   color: var(--muted);
