@@ -37,6 +37,8 @@ const GAME_LINGER: Duration = Duration::from_secs(60);
 const GAME_DWELL: Duration = Duration::from_secs(3);
 /// How often to look for newly installed games.
 const GAME_SCAN_EVERY: Duration = Duration::from_secs(60);
+/// How often to list the running processes.
+const PROCESS_SCAN_EVERY: Duration = Duration::from_secs(10);
 
 /// The game that keeps capture on.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -128,6 +130,8 @@ pub struct Recorder {
     inner: Mutex<Inner>,
     /// Games that launchers installed.
     installed: Mutex<Arc<Vec<Installed>>>,
+    /// Exe paths of the running processes.
+    processes: Mutex<Arc<Vec<String>>>,
     saving: AtomicBool,
     listener: Mutex<Option<Listener>>,
 }
@@ -153,6 +157,7 @@ impl Recorder {
                 restarts: 0,
             }),
             installed: Mutex::new(Arc::new(Vec::new())),
+            processes: Mutex::new(Arc::new(Vec::new())),
             saving: AtomicBool::new(false),
             listener: Mutex::new(None),
         });
@@ -180,6 +185,18 @@ impl Recorder {
                     None => break,
                 }
                 std::thread::sleep(GAME_SCAN_EVERY);
+            })
+            .ok();
+        let weak = Arc::downgrade(&rec);
+        std::thread::Builder::new()
+            .name("process-scan".into())
+            .spawn(move || loop {
+                let found = Arc::new(win::processes());
+                match weak.upgrade() {
+                    Some(r) => *r.processes.lock() = found,
+                    None => break,
+                }
+                std::thread::sleep(PROCESS_SCAN_EVERY);
             })
             .ok();
         rec
@@ -270,15 +287,19 @@ impl Recorder {
         let mut inner = self.inner.lock();
         let mut changed = false;
 
-        if let Some(fg) = win::foreground() {
-            let me = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
-                .unwrap_or_default();
-            let game = (!fg.exe.eq_ignore_ascii_case(&me) && fg.monitor == Some(inner.settings.monitor))
-                .then(|| games::detect(&fg, &installed, &inner.settings.game_apps, &inner.settings.not_games))
-                .flatten();
-            if let Some(game) = game {
+        let me = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        let (user, blocked) = (&inner.settings.game_apps, &inner.settings.not_games);
+        let in_front = win::foreground().filter(|fg| !fg.exe.eq_ignore_ascii_case(&me)).and_then(|fg| {
+            let on_screen = fg.monitor == Some(inner.settings.monitor);
+            on_screen.then(|| games::detect(&fg, &installed, user, blocked)).flatten().map(|g| (fg, g))
+        });
+        // A game that runs behind other windows still counts.
+        let found = in_front.or_else(|| games::running(&self.processes.lock(), &installed, user, blocked));
+        match found {
+            Some((fg, game)) => {
                 // A new match must hold for a moment, so a short full-screen video or overlay does not start capture.
                 let since = match &inner.candidate {
                     Some((exe, t)) if *exe == fg.exe => *t,
@@ -295,9 +316,8 @@ impl Recorder {
                     inner.last_game = Some(game.name);
                     inner.game_seen = Some(Instant::now());
                 }
-            } else {
-                inner.candidate = None;
             }
+            None => inner.candidate = None,
         }
 
         if inner.status.game.is_some() && !inner.game_seen.is_some_and(|t| t.elapsed() < GAME_LINGER) {
