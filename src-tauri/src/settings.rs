@@ -8,6 +8,8 @@ pub struct Settings {
     pub buffer_enabled: bool,
     /// Pause the buffer while no full-screen game is in front.
     pub games_only: bool,
+    /// App names (exe stems) counted as games even in a normal window.
+    pub game_apps: Vec<String>,
     /// Seconds saved by the clip hotkey.
     pub clip_seconds: u32,
     pub fps: u32,
@@ -41,6 +43,7 @@ impl Default for Settings {
         Self {
             buffer_enabled: true,
             games_only: true,
+            game_apps: Vec::new(),
             clip_seconds: 30,
             fps: 60,
             quality: "high".into(),

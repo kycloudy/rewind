@@ -29,6 +29,7 @@ export type Status = {
 export type Settings = {
   bufferEnabled: boolean;
   gamesOnly: boolean;
+  gameApps: string[];
   clipSeconds: number;
   fps: number;
   quality: "low" | "medium" | "high" | "ultra";
