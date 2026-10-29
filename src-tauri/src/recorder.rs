@@ -234,7 +234,7 @@ impl Recorder {
         let mut inner = self.inner.lock();
         let mut changed = false;
 
-        if let Some((exe, title)) = win::foreground_app() {
+        if let Some((exe, title, path)) = win::foreground_app() {
             let me = std::env::current_exe()
                 .ok()
                 .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_lowercase()))
@@ -242,7 +242,7 @@ impl Recorder {
             let exe_l = exe.to_lowercase();
             if !exe.is_empty() && exe_l != me && exe_l != "explorer" && exe_l != "searchhost" {
                 inner.last_game = Some(win::game_name(&exe, &title));
-                if win::looks_like_game(&exe, win::foreground_full_screen()) {
+                if win::looks_like_game(&exe, &path, win::foreground_full_screen(), &inner.settings.game_apps) {
                     inner.game_seen = Some(Instant::now());
                 }
             }

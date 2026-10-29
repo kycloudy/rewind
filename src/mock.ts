@@ -50,6 +50,7 @@ let clips: Clip[] = [
 let settings: Settings = {
   bufferEnabled: true,
   gamesOnly: true,
+  gameApps: [],
   clipSeconds: 30,
   fps: 60,
   quality: "high",
