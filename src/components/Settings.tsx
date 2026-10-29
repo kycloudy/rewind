@@ -42,6 +42,9 @@ export function SettingsView({ settings, onSaved, onError }: Props) {
           <Row label="Replay buffer">
             <Switch checked={draft.bufferEnabled} onChange={(v) => set("bufferEnabled", v)} label="Replay buffer" />
           </Row>
+          <Row label="Only in games">
+            <Switch checked={draft.gamesOnly} onChange={(v) => set("gamesOnly", v)} label="Only in games" />
+          </Row>
           <Row label="Clip length">
             <Segmented
               value={String(draft.clipSeconds)}

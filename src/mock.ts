@@ -49,6 +49,7 @@ let clips: Clip[] = [
 
 let settings: Settings = {
   bufferEnabled: true,
+  gamesOnly: true,
   clipSeconds: 30,
   fps: 60,
   quality: "high",
@@ -68,6 +69,7 @@ let settings: Settings = {
 
 let status: Status = {
   buffering: true,
+  waitingForGame: false,
   recording: false,
   recordingSince: null,
   encoder: "NVIDIA NVENC",

@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 pub struct Settings {
     /// Replay buffer master switch.
     pub buffer_enabled: bool,
+    /// Pause the buffer while no full-screen game is in front.
+    pub games_only: bool,
     /// Seconds saved by the clip hotkey.
     pub clip_seconds: u32,
     pub fps: u32,
@@ -32,6 +34,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             buffer_enabled: true,
+            games_only: true,
             clip_seconds: 30,
             fps: 60,
             quality: "high".into(),
@@ -54,15 +57,26 @@ impl Default for Settings {
 impl Settings {
     /// Video bitrate in kbit/s.
     pub fn video_kbps(&self) -> u32 {
+        self.video_kbps_at(None)
+    }
+
+    /// Video bitrate in kbit/s for a display `native_height` pixels tall.
+    /// The output height, not the setting's name, picks the scale, so a
+    /// native 1080p display gets the 1080p bitrate.
+    pub fn video_kbps_at(&self, native_height: Option<u32>) -> u32 {
+        let out_height = match (self.target_height(), native_height) {
+            (Some(t), Some(n)) => Some(t.min(n)),
+            (t, n) => t.or(n),
+        };
         let base = match self.quality.as_str() {
             "low" => 8_000,
             "medium" => 15_000,
             "ultra" => 45_000,
             _ => 25_000,
         };
-        let res_scale = match self.resolution.as_str() {
-            "720" => 0.5,
-            "1080" => 0.8,
+        let res_scale = match out_height {
+            Some(h) if h <= 720 => 0.5,
+            Some(h) if h <= 1080 => 0.8,
             _ => 1.0,
         };
         let fps_scale = if self.fps <= 30 { 0.7 } else { 1.0 };

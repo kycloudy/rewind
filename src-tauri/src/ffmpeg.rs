@@ -135,7 +135,7 @@ pub fn encoder_args(encoder: &str, kbps: u32, fps: u32, live: bool) -> Vec<Strin
     let push = |a: &mut Vec<String>, s: &[&str]| a.extend(s.iter().map(|x| x.to_string()));
     match vendor(encoder) {
         Vendor::Nvidia => {
-            push(&mut a, &["-preset", if live { "p4" } else { "p6" }, "-rc", "vbr", "-spatial-aq", "1"]);
+            push(&mut a, &["-preset", if live { "p3" } else { "p6" }, "-rc", "vbr", "-spatial-aq", "1"]);
             if live {
                 push(&mut a, &["-tune", "ll", "-forced-idr", "1"]);
             }

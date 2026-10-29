@@ -19,6 +19,24 @@ pub fn foreground_app() -> Option<(String, String)> {
     imp::foreground_app()
 }
 
+/// True when the foreground window is borderless and covers its whole monitor,
+/// as full-screen and borderless-windowed games do.
+pub fn foreground_full_screen() -> bool {
+    imp::foreground_full_screen()
+}
+
+/// Apps that often run full screen but are not games.
+const NOT_GAMES: &[&str] = &[
+    "applicationframehost", "arc", "brave", "chrome", "explorer", "firefox", "lockapp", "mpc-be64",
+    "mpc-hc", "mpc-hc64", "mpv", "msedge", "opera", "potplayer", "potplayermini64", "powerpnt",
+    "searchhost", "shellexperiencehost", "startmenuexperiencehost", "vivaldi", "vlc", "wmplayer",
+];
+
+/// Guesses whether the foreground app is a game, from its exe stem.
+pub fn looks_like_game(exe: &str, full_screen: bool) -> bool {
+    full_screen && !exe.is_empty() && !NOT_GAMES.contains(&exe.to_lowercase().as_str())
+}
+
 pub fn monitors() -> Vec<Monitor> {
     imp::monitors()
 }
@@ -107,7 +125,9 @@ mod imp {
     use std::path::Path;
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{CloseHandle, GlobalFree, HWND, LPARAM, RECT};
-    use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFO};
+    use windows_sys::Win32::Graphics::Gdi::{
+        EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONULL,
+    };
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
     use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
     use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
@@ -115,7 +135,10 @@ mod imp {
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows_sys::Win32::UI::Shell::DROPFILES;
-    use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId,
+        GWL_STYLE, WS_CAPTION,
+    };
 
     const CF_HDROP: u32 = 15;
     const MONITORINFOF_PRIMARY: u32 = 1;
@@ -147,6 +170,38 @@ mod imp {
                 CloseHandle(proc);
             }
             Some((exe, title))
+        }
+    }
+
+    pub fn foreground_full_screen() -> bool {
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd.is_null() {
+                return false;
+            }
+            // The desktop itself fills the screen too.
+            let mut class = [0u16; 32];
+            let n = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32);
+            let class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
+            if class == "Progman" || class == "WorkerW" {
+                return false;
+            }
+            // A maximized app window has a title bar; a full-screen game has none.
+            if GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION {
+                return false;
+            }
+            let hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
+            if hmon.is_null() {
+                return false;
+            }
+            let mut info: MONITORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            let mut r: RECT = std::mem::zeroed();
+            if GetMonitorInfoW(hmon, &mut info) == 0 || GetWindowRect(hwnd, &mut r) == 0 {
+                return false;
+            }
+            let m = info.rcMonitor;
+            r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
         }
     }
 
@@ -244,6 +299,9 @@ mod imp {
     pub fn foreground_app() -> Option<(String, String)> {
         None
     }
+    pub fn foreground_full_screen() -> bool {
+        false
+    }
     pub fn monitors() -> Vec<Monitor> {
         vec![Monitor { index: 0, name: "Main display".into(), width: 1920, height: 1080, primary: true }]
     }
@@ -260,7 +318,15 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
-    use super::game_name;
+    use super::{game_name, looks_like_game};
+
+    #[test]
+    fn games() {
+        assert!(looks_like_game("cs2", true));
+        assert!(!looks_like_game("cs2", false));
+        assert!(!looks_like_game("Chrome", true));
+        assert!(!looks_like_game("", true));
+    }
 
     #[test]
     fn names() {

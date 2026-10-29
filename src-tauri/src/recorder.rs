@@ -25,11 +25,16 @@ type Listener = Box<dyn Fn(Status) + Send + Sync>;
 const SEGMENT_SECS: f64 = 2.0;
 /// A run that dies sooner than this counts as a failed start.
 const START_GRACE: Duration = Duration::from_secs(6);
+/// In games-only mode, keep capturing this long after the game leaves the
+/// foreground, so a quick alt-tab does not wipe the buffer.
+const GAME_LINGER: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub buffering: bool,
+    /// Games-only mode is on and no game is in front, so capture is paused.
+    pub waiting_for_game: bool,
     pub recording: bool,
     /// Unix ms when the current recording started.
     pub recording_since: Option<i64>,
@@ -41,9 +46,9 @@ pub struct Status {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Pipeline {
-    /// Frames stay on the GPU from capture to encoder.
+    /// Frames stay on the GPU from capture to encoder, scaled there if needed.
     ZeroCopy,
-    /// Frames are copied to system memory (needed for scaling and x264).
+    /// Frames are copied to system memory (needed for x264, and the fallback for GPU scaling).
     Download,
 }
 
@@ -74,7 +79,17 @@ struct Inner {
     session: Option<Session>,
     status: Status,
     last_game: Option<String>,
+    /// When a full-screen game was last in the foreground.
+    game_seen: Option<Instant>,
     restarts: u32,
+}
+
+impl Inner {
+    fn capture_wanted(&self) -> bool {
+        !self.settings.games_only
+            || self.session.is_some()
+            || self.game_seen.is_some_and(|t| t.elapsed() < GAME_LINGER)
+    }
 }
 
 pub struct Recorder {
@@ -112,6 +127,7 @@ impl Recorder {
                 next_run_id: 1,
                 session: None,
                 last_game: None,
+                game_seen: None,
                 restarts: 0,
             }),
             saving: AtomicBool::new(false),
@@ -184,8 +200,14 @@ impl Recorder {
         }
         inner.status.buffering = false;
         inner.status.encoder = None;
+        inner.status.waiting_for_game = false;
         if !inner.settings.buffer_enabled {
             inner.status.error = None;
+            return;
+        }
+        if !inner.capture_wanted() {
+            inner.status.error = None;
+            inner.status.waiting_for_game = true;
             return;
         }
         let strategies = strategies.unwrap_or_else(|| plan(&inner.settings));
@@ -220,7 +242,18 @@ impl Recorder {
             let exe_l = exe.to_lowercase();
             if !exe.is_empty() && exe_l != me && exe_l != "explorer" && exe_l != "searchhost" {
                 inner.last_game = Some(win::game_name(&exe, &title));
+                if win::looks_like_game(&exe, win::foreground_full_screen()) {
+                    inner.game_seen = Some(Instant::now());
+                }
             }
+        }
+
+        // Games-only mode: start when a game comes to the front, pause when none has been there for a while.
+        if inner.settings.buffer_enabled && inner.capture_wanted() == inner.status.waiting_for_game {
+            log::info!("{} capture", if inner.status.waiting_for_game { "resuming" } else { "pausing" });
+            inner.restarts = 0;
+            self.restart_locked(&mut inner, 0);
+            changed = true;
         }
 
         let exited = match inner.run.as_mut() {
@@ -284,6 +317,9 @@ impl Recorder {
             let i = self.inner.lock();
             (i.settings.clip_seconds as f64, i.settings.clips_dir.clone())
         };
+        if self.inner.lock().status.waiting_for_game {
+            return Err("Rewind records only while a game is open. You can change this in Settings.".into());
+        }
         let (_, dir) = self.run_dir().ok_or("The replay buffer is off. Turn it on in Settings.")?;
         self.set_saving(true);
 
@@ -393,6 +429,11 @@ impl Recorder {
         if inner.session.is_some() {
             return Ok(());
         }
+        // Recording counts as a request to capture, even outside a game.
+        if inner.status.waiting_for_game {
+            inner.game_seen = Some(Instant::now());
+            self.restart_locked(&mut inner, 0);
+        }
         let (run_id, dir) = inner
             .run
             .as_ref()
@@ -464,9 +505,7 @@ fn plan(s: &Settings) -> Vec<(&'static str, Pipeline)> {
     let enc = ffmpeg::resolve_encoder(&s.encoder);
     let mut out = Vec::new();
     if ffmpeg::vendor(enc) != Vendor::Cpu {
-        if s.target_height().is_none() {
-            out.push((enc, Pipeline::ZeroCopy));
-        }
+        out.push((enc, Pipeline::ZeroCopy));
         out.push((enc, Pipeline::Download));
     }
     out.push(("libx264", Pipeline::Download));
@@ -502,6 +541,9 @@ fn spawn(
     let mut vf: Vec<String> = Vec::new();
     match pipeline {
         Pipeline::ZeroCopy => {
+            if let Some(h) = s.target_height() {
+                vf.push(format!("scale_d3d11=width=-2:height='min({h},ih)':format=nv12"));
+            }
             if vendor == Vendor::Intel {
                 vf.push("hwmap=derive_device=qsv".into());
                 vf.push("format=qsv".into());
@@ -523,7 +565,8 @@ fn spawn(
     if audio {
         cmd.args(["-map", "1:a", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1000"]);
     }
-    cmd.args(ffmpeg::encoder_args(encoder, s.video_kbps(), s.fps, true));
+    let native_height = win::monitors().get(s.monitor as usize).map(|m| m.height.max(0) as u32);
+    cmd.args(ffmpeg::encoder_args(encoder, s.video_kbps_at(native_height), s.fps, true));
     cmd.args(["-force_key_frames", "expr:gte(t,n_forced*2)"]);
     cmd.args(["-f", "segment", "-segment_time", "2", "-segment_format", "mpegts", "-reset_timestamps", "1"]);
     cmd.args(["-segment_wrap", &wrap.to_string()]);

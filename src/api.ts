@@ -17,6 +17,7 @@ export type Clip = {
 
 export type Status = {
   buffering: boolean;
+  waitingForGame: boolean;
   recording: boolean;
   recordingSince: number | null;
   encoder: string | null;
@@ -27,6 +28,7 @@ export type Status = {
 
 export type Settings = {
   bufferEnabled: boolean;
+  gamesOnly: boolean;
   clipSeconds: number;
   fps: number;
   quality: "low" | "medium" | "high" | "ultra";
