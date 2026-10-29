@@ -17,6 +17,8 @@ pub struct Settings {
     pub resolution: String,
     /// "auto" or an FFmpeg encoder name such as "h264_nvenc".
     pub encoder: String,
+    /// "h264" | "hevc" | "av1". Used for the replay buffer when the GPU supports it, else H.264.
+    pub codec: String,
     pub monitor: u32,
     pub system_audio: bool,
     pub mic: bool,
@@ -44,6 +46,7 @@ impl Default for Settings {
             quality: "high".into(),
             resolution: "native".into(),
             encoder: "auto".into(),
+            codec: "h264".into(),
             monitor: 0,
             system_audio: true,
             mic: false,
@@ -105,6 +108,7 @@ impl Settings {
             || self.quality != other.quality
             || self.resolution != other.resolution
             || self.encoder != other.encoder
+            || self.codec != other.codec
             || self.monitor != other.monitor
             || self.system_audio != other.system_audio
             || self.mic != other.mic
@@ -121,6 +125,9 @@ impl Settings {
             .unwrap_or_default();
         s.clip_seconds = s.clip_seconds.clamp(5, 300);
         s.fps = if s.fps >= 45 { 60 } else { 30 };
+        if !matches!(s.codec.as_str(), "hevc" | "av1") {
+            s.codec = "h264".into();
+        }
         s.mic_volume = s.mic_volume.clamp(0.0, 2.0);
         s.mic_gate_threshold = s.mic_gate_threshold.clamp(-80.0, -10.0);
         if s.clips_dir.as_os_str().is_empty() {

@@ -7,7 +7,7 @@ Rewind is a small gameplay clipping app for Windows. It keeps the last 30 second
 - **Instant replay.** F8 saves the last 15 s to 5 min. The clip includes the moment you pressed the key.
 - **Games only.** By default, Rewind records only while a full-screen or borderless game is in front. It keeps recording for 60 s after you leave the game. Turn this off in Settings to record all the time.
 - **Session recording.** F9 starts and stops a full recording. It uses the same capture, so it adds no extra GPU load.
-- **GPU capture.** Rewind captures with Desktop Duplication and encodes on your GPU (NVIDIA NVENC, AMD AMF, or Intel Quick Sync). If no GPU encoder works, it uses the CPU (x264).
+- **GPU capture.** Rewind captures with Desktop Duplication and encodes on your GPU (NVIDIA NVENC, AMD AMF, or Intel Quick Sync). If no GPU encoder works, it uses the CPU (x264). In Settings, you can pick HEVC or AV1 instead of H.264 if your GPU supports it. Clips are about 30 to 40% smaller. HEVC and AV1 clips may not play in every app. If the GPU cannot start the codec, Rewind uses H.264.
 - **Game and microphone audio.** Rewind records system sound and, if you turn it on, your microphone. A noise gate can mute the microphone while you do not speak.
 - **Game detection.** Rewind names and sorts each clip by the game in the foreground.
 - **Library.** Clips are grouped by day and by game. You can search, add favorites, and rename clips.
@@ -16,7 +16,7 @@ Rewind is a small gameplay clipping app for Windows. It keeps the last 30 second
 - **Copy file.** Copy a clip to the clipboard, then paste it into Discord or a folder.
 - **Tray app.** Closing the window keeps Rewind in the tray. Rewind can start with Windows.
 
-Clips save to `Videos\Rewind\<Game>\` as MP4 (H.264 and AAC).
+Clips save to `Videos\Rewind\<Game>\` as MP4 (H.264, HEVC, or AV1, and AAC).
 
 ## Get the installer (no local setup)
 

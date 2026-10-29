@@ -55,6 +55,7 @@ let settings: Settings = {
   quality: "high",
   resolution: "native",
   encoder: "auto",
+  codec: "h264",
   monitor: 0,
   systemAudio: true,
   mic: false,
@@ -109,8 +110,10 @@ export const mock = {
           ],
           mics: ["Microphone (HyperX QuadCast)", "Headset Microphone (Arctis 7)"],
           encoders: [
-            { name: "h264_nvenc", label: "NVIDIA NVENC" },
-            { name: "libx264", label: "CPU (x264)" },
+            { name: "h264_nvenc", label: "NVIDIA NVENC", codec: "h264", vendor: "nvidia" },
+            { name: "hevc_nvenc", label: "NVIDIA NVENC", codec: "hevc", vendor: "nvidia" },
+            { name: "av1_nvenc", label: "NVIDIA NVENC", codec: "av1", vendor: "nvidia" },
+            { name: "libx264", label: "CPU (x264)", codec: "h264", vendor: "cpu" },
           ],
         };
       case "list_clips":

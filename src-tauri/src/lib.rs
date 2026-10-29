@@ -186,7 +186,7 @@ async fn export_clip(app: AppHandle, state: S<'_>, req: ExportRequest) -> Result
         let start = req.start.clamp(0.0, src.duration);
         let end = req.end.clamp(start + 0.5, src.duration.max(start + 0.5));
         let dur = end - start;
-        let encoder = ffmpeg::resolve_encoder(&settings.encoder);
+        let encoder = ffmpeg::resolve_encoder(&settings.encoder, "h264");
 
         let (video_kbps, audio_kbps, height) = match req.target_mb {
             Some(mb) => {
