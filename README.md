@@ -15,7 +15,6 @@ Rewind is a small gameplay clipping app for Windows. It keeps the last 30 second
 - **Discord export.** Export a clip at 10 MB or 50 MB. Rewind sets the bitrate and the resolution to fit.
 - **Copy file.** Copy a clip to the clipboard, then paste it into Discord or a folder.
 - **Tray app.** Closing the window keeps Rewind in the tray. Rewind can start with Windows.
-- **Updates.** Rewind checks GitHub Releases when you open it. Click **Update** to install the new version. Rewind restarts when the update is done.
 
 Clips save to `Videos\Rewind\<Game>\` as MP4 (H.264, HEVC, or AV1, and AAC).
 
@@ -24,32 +23,9 @@ Clips save to `Videos\Rewind\<Game>\` as MP4 (H.264, HEVC, or AV1, and AAC).
 1. Create a new GitHub repository and push this folder to the `main` branch.
 2. Open the **Actions** tab. Wait for **Build Windows installer** to finish (about 10 minutes).
 3. Open the run and download the **Rewind-setup** artifact.
-4. Run `Rewind_0.0.4_x64-setup.exe`.
+4. Run `Rewind_0.1.0_x64-setup.exe`.
 
-To publish a release, push a tag such as `v0.0.5`. The workflow sets the app version from the tag and attaches the installer to the release.
-
-### Set up in-app updates (one time)
-
-Rewind installs an update only if the installer has a valid signature. The release workflow signs the installer and attaches `latest.json`, which tells the app about the new version.
-
-1. On your PC, make a key pair:
-
-   ```powershell
-   npx @tauri-apps/cli signer generate -w "$HOME\.tauri\rewind.key"
-   ```
-
-   Enter a password when it asks. Keep the key file and the password safe. If you lose them, installed copies cannot update.
-2. In the repository, open **Settings > Secrets and variables > Actions** and add these repository secrets:
-
-   | Secret | Value |
-   | --- | --- |
-   | `TAURI_SIGNING_PRIVATE_KEY` | The contents of `rewind.key` |
-   | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The password |
-   | `TAURI_UPDATER_PUBKEY` | The contents of `rewind.key.pub` |
-
-3. Push a new tag. The release gets the installer and `latest.json`.
-
-The tag version must be higher than the installed version, or the app does not offer the update.
+To publish a release, push a tag such as `v0.1.0`. The workflow attaches the installer to the release.
 
 ## Build on your PC
 
@@ -87,7 +63,6 @@ WASAPI loopback + mic ──► Rust mixer (48 kHz) ──► FFmpeg stdin ─�
 | `src-tauri/src/gate.rs` | Microphone noise gate |
 | `src-tauri/src/ffmpeg.rs` | Encoder detection, join, thumbnails, export |
 | `src-tauri/src/win.rs` | Foreground game, displays, clipboard, sound |
-| `src-tauri/src/update.rs` | In-app updates from GitHub Releases |
 | `src-tauri/src/lib.rs` | Commands, hotkeys, tray, settings |
 | `src/` | React UI |
 
