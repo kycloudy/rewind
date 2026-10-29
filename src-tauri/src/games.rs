@@ -356,6 +356,13 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_path() {
+        // Anti-cheat games: only the exe name is known, so the full-screen test decides.
+        assert!(is_game(&app("SomeShooter-Win64-Shipping", "", true), &[]));
+        assert!(!is_game(&app("SomeShooter-Win64-Shipping", "", false), &[]));
+    }
+
+    #[test]
     fn windowed_games() {
         assert!(is_game(&app("cs2", "", false), &[]));
         let steam = r"C:\Program Files (x86)\Steam\steamapps\common\Hades\Hades.exe";
