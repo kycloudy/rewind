@@ -1,19 +1,23 @@
 //! Replay buffer and session recording.
 //!
 //! One FFmpeg process captures the screen (Desktop Duplication via `ddagrab`),
-//! encodes on the GPU, and writes a ring of 2-second MPEG-TS segments. Saving
-//! a clip joins the newest segments without re-encoding. Session recording
-//! copies each finished segment aside and joins them when the session stops.
-//! Both features share the one encoder, so recording costs no extra GPU time.
+//! encodes on the GPU, and writes MPEG-TS to stdout. `Ring` keeps the newest
+//! 2-second chunks of that stream in memory, so the buffer writes nothing to
+//! disk. Saving a clip remuxes the newest chunks to MP4 without re-encoding.
+//! Session recording appends each finished chunk to a file and joins the files
+//! when the session stops. Both features share the one encoder, so recording
+//! costs no extra GPU time.
 
 use crate::audio::{AudioConfig, AudioPump};
 use crate::ffmpeg::{self, Vendor};
 use crate::library::{self, Clip, Library};
+use crate::ring::{self, Ring};
 use crate::settings::Settings;
 use crate::win;
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::fs::File;
+use std::io::{BufRead, BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,7 +61,9 @@ struct Run {
     child: Child,
     audio: Option<AudioPump>,
     started: Instant,
-    dir: PathBuf,
+    ring: Arc<Ring>,
+    /// Last line FFmpeg wrote to stderr.
+    log: Arc<Mutex<String>>,
     strategies: Vec<(&'static str, Pipeline)>,
     strategy: usize,
 }
@@ -65,8 +71,10 @@ struct Run {
 struct Session {
     dir: PathBuf,
     run_id: u64,
-    from_time: f64,
-    seen: HashSet<String>,
+    /// Seq of the last chunk written.
+    last_seq: u64,
+    /// The part file for the current run. A capture restart starts a new part.
+    part: Option<BufWriter<File>>,
     parts: Vec<PathBuf>,
     started_ms: i64,
     game: String,
@@ -93,7 +101,6 @@ impl Inner {
 }
 
 pub struct Recorder {
-    buffer_root: PathBuf,
     sessions_root: PathBuf,
     work_dir: PathBuf,
     thumbs_dir: PathBuf,
@@ -103,19 +110,11 @@ pub struct Recorder {
     listener: Mutex<Option<Listener>>,
 }
 
-#[derive(Debug, Clone)]
-struct Segment {
-    file: PathBuf,
-    start: f64,
-    end: f64,
-}
-
 impl Recorder {
     pub fn new(data_dir: &Path, library: Arc<Library>, settings: Settings) -> Arc<Self> {
-        let buffer_root = data_dir.join("buffer");
-        let _ = std::fs::remove_dir_all(&buffer_root);
+        // Older versions kept the ring buffer here on disk.
+        let _ = std::fs::remove_dir_all(data_dir.join("buffer"));
         let rec = Arc::new(Self {
-            buffer_root,
             sessions_root: data_dir.join("sessions"),
             work_dir: data_dir.join("work"),
             thumbs_dir: data_dir.join("thumbs"),
@@ -133,7 +132,7 @@ impl Recorder {
             saving: AtomicBool::new(false),
             listener: Mutex::new(None),
         });
-        for d in [&rec.buffer_root, &rec.sessions_root, &rec.work_dir, &rec.thumbs_dir] {
+        for d in [&rec.sessions_root, &rec.work_dir, &rec.thumbs_dir] {
             let _ = std::fs::create_dir_all(d);
         }
         let weak = Arc::downgrade(&rec);
@@ -217,19 +216,19 @@ impl Recorder {
         };
         let id = inner.next_run_id;
         inner.next_run_id += 1;
-        match spawn(&self.buffer_root, id, &inner.settings, encoder, pipeline) {
-            Ok((child, audio, dir)) => {
+        match spawn(&inner.settings, encoder, pipeline) {
+            Ok((child, audio, ring, log)) => {
                 log::info!("capture started: {encoder} {pipeline:?}");
                 inner.status.buffering = true;
                 inner.status.encoder = Some(label(encoder).into());
                 inner.status.error = None;
-                inner.run = Some(Run { id, child, audio, started: Instant::now(), dir, strategies, strategy });
+                inner.run = Some(Run { id, child, audio, started: Instant::now(), ring, log, strategies, strategy });
             }
             Err(e) => inner.status.error = Some(e),
         }
     }
 
-    /// Runs every 500 ms: watches FFmpeg, copies session segments, tracks the game.
+    /// Runs every 500 ms: watches FFmpeg, writes session chunks, tracks the game.
     fn tick(&self) {
         let mut inner = self.inner.lock();
         let mut changed = false;
@@ -258,7 +257,7 @@ impl Recorder {
 
         let exited = match inner.run.as_mut() {
             Some(run) => match run.child.try_wait() {
-                Ok(Some(_)) => Some((run.started.elapsed(), run.strategy, tail(&run.dir.join("ffmpeg.log")))),
+                Ok(Some(_)) => Some((run.started.elapsed(), run.strategy, tail(&run.log))),
                 _ => None,
             },
             None => None,
@@ -278,9 +277,9 @@ impl Recorder {
             changed = true;
         }
 
-        let run_info = inner.run.as_ref().map(|r| (r.id, r.dir.clone()));
-        if let (Some(session), Some((run_id, dir))) = (inner.session.as_mut(), run_info) {
-            copy_new_parts(session, run_id, &dir);
+        let run_info = inner.run.as_ref().map(|r| (r.id, r.ring.clone()));
+        if let (Some(session), Some((run_id, ring))) = (inner.session.as_mut(), run_info) {
+            write_new_chunks(session, run_id, &ring);
         }
 
         let st = inner.status.clone();
@@ -295,8 +294,8 @@ impl Recorder {
         inner.last_game.clone().unwrap_or_else(|| "Desktop".into())
     }
 
-    fn run_dir(&self) -> Option<(u64, PathBuf)> {
-        self.inner.lock().run.as_ref().map(|r| (r.id, r.dir.clone()))
+    fn run_ring(&self) -> Option<(u64, Arc<Ring>)> {
+        self.inner.lock().run.as_ref().map(|r| (r.id, r.ring.clone()))
     }
 
     // ------------------------------------------------------------ clipping
@@ -320,40 +319,26 @@ impl Recorder {
         if self.inner.lock().status.waiting_for_game {
             return Err("Rewind records only while a game is open. You can change this in Settings.".into());
         }
-        let (_, dir) = self.run_dir().ok_or("The replay buffer is off. Turn it on in Settings.")?;
+        let (_, ring) = self.run_ring().ok_or("The replay buffer is off. Turn it on in Settings.")?;
         self.set_saving(true);
 
-        // Include the moment of the key press: wait for the segment in progress to close.
-        let before = read_list(&dir).last().map(|s| s.end).unwrap_or(0.0);
-        wait_for(|| read_list(&dir).last().map(|s| s.end).unwrap_or(0.0) > before, Duration::from_secs(5));
-        let segs = read_list(&dir);
-        if segs.is_empty() {
+        // Include the moment of the key press: wait for the chunk in progress to close.
+        ring.wait_past(ring.last_seq(), Duration::from_secs(5));
+        let chunks = ring.last(seconds);
+        if chunks.is_empty() {
             self.set_saving(false);
             return Err("Nothing recorded yet. Try again in a few seconds.".into());
         }
-        let mut picked = Vec::new();
-        let mut total = 0.0;
-        for s in segs.iter().rev() {
-            if total >= seconds - 0.5 {
-                break;
-            }
-            total += s.end - s.start;
-            picked.push(s.clone());
-        }
-        picked.reverse();
-
-        // Copy first so the ring buffer cannot overwrite a segment mid-join.
-        let tmp = self.work_dir.join(library::new_id());
-        std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
-        let mut parts = Vec::new();
-        for (i, s) in picked.iter().enumerate() {
-            let dst = tmp.join(format!("{i:04}.ts"));
-            if std::fs::copy(&s.file, &dst).is_ok() {
-                parts.push(dst);
-            }
-        }
-        let res = self.finish(&parts, total, &game, &clips_dir, "clip", chrono::Local::now());
-        let _ = std::fs::remove_dir_all(&tmp);
+        let total = chunks.iter().map(|c| c.end - c.start).sum();
+        let headers = ring.headers();
+        let res = self.finish(
+            |out| ffmpeg::remux_ts(out, move |w| ring::write_ts(w, &headers, &chunks)),
+            total,
+            &game,
+            &clips_dir,
+            "clip",
+            chrono::Local::now(),
+        );
         self.set_saving(false);
         res
     }
@@ -367,18 +352,16 @@ impl Recorder {
         self.emit(st);
     }
 
+    /// Writes the video with `make`, then adds it to the library.
     fn finish(
         &self,
-        parts: &[PathBuf],
+        make: impl FnOnce(&Path) -> Result<(), String>,
         duration: f64,
         game: &str,
         clips_dir: &Path,
         kind: &str,
         when: chrono::DateTime<chrono::Local>,
     ) -> Result<Clip, String> {
-        if parts.is_empty() {
-            return Err("No video to save".into());
-        }
         let folder = clips_dir.join(library::safe_file_stem(game));
         std::fs::create_dir_all(&folder).map_err(|e| format!("Could not create {}: {e}", folder.display()))?;
         let stem = format!(
@@ -388,7 +371,7 @@ impl Recorder {
             if kind == "recording" { " (recording)" } else { "" }
         );
         let out = library::unique_path(&folder, &stem, "mp4");
-        ffmpeg::concat(parts, &out, &self.work_dir)?;
+        make(&out)?;
 
         let duration = ffmpeg::probe_duration(&out).unwrap_or(duration);
         let id = library::new_id();
@@ -434,20 +417,19 @@ impl Recorder {
             inner.game_seen = Some(Instant::now());
             self.restart_locked(&mut inner, 0);
         }
-        let (run_id, dir) = inner
+        let (run_id, last_seq) = inner
             .run
             .as_ref()
-            .map(|r| (r.id, r.dir.clone()))
+            .map(|r| (r.id, r.ring.last_seq()))
             .ok_or("Turn on the replay buffer to record. Recording uses the same capture.")?;
-        let from_time = read_list(&dir).last().map(|s| s.end).unwrap_or(0.0);
         let sdir = self.sessions_root.join(library::new_id());
         std::fs::create_dir_all(&sdir).map_err(|e| e.to_string())?;
         let now = chrono::Local::now().timestamp_millis();
         inner.session = Some(Session {
             dir: sdir,
             run_id,
-            from_time,
-            seen: HashSet::new(),
+            last_seq,
+            part: None,
             parts: Vec::new(),
             started_ms: now,
             game,
@@ -461,17 +443,16 @@ impl Recorder {
     }
 
     pub fn stop_recording(&self) -> Result<Clip, String> {
-        let (run_dir, clips_dir) = {
+        let (run, clips_dir) = {
             let i = self.inner.lock();
             if i.session.is_none() {
                 return Err("Not recording".into());
             }
-            (i.run.as_ref().map(|r| (r.id, r.dir.clone())), i.settings.clips_dir.clone())
+            (i.run.as_ref().map(|r| (r.id, r.ring.clone())), i.settings.clips_dir.clone())
         };
-        // Wait for the segment in progress so the last seconds are kept.
-        if let Some((_, dir)) = &run_dir {
-            let before = read_list(dir).last().map(|s| s.end).unwrap_or(0.0);
-            wait_for(|| read_list(dir).last().map(|s| s.end).unwrap_or(0.0) > before, Duration::from_secs(5));
+        // Wait for the chunk in progress so the last seconds are kept.
+        if let Some((_, ring)) = &run {
+            ring.wait_past(ring.last_seq(), Duration::from_secs(5));
         }
         let mut session = {
             let mut i = self.inner.lock();
@@ -479,16 +460,22 @@ impl Recorder {
             i.status.recording_since = None;
             i.session.take().ok_or("Not recording")?
         };
-        if let Some((id, dir)) = &run_dir {
-            copy_new_parts(&mut session, *id, dir);
+        if let Some((id, ring)) = &run {
+            write_new_chunks(&mut session, *id, ring);
         }
+        close_part(&mut session);
         self.emit(self.status());
 
         let when = chrono::DateTime::from_timestamp_millis(session.started_ms)
             .map(|d| d.with_timezone(&chrono::Local))
             .unwrap_or_else(chrono::Local::now);
-        let est = session.parts.len() as f64 * SEGMENT_SECS;
-        let res = self.finish(&session.parts, est, &session.game, &clips_dir, "recording", when);
+        let res = if session.parts.is_empty() {
+            Err("No video to save".into())
+        } else {
+            let est = (chrono::Local::now().timestamp_millis() - session.started_ms) as f64 / 1000.0;
+            let parts = std::mem::take(&mut session.parts);
+            self.finish(|out| ffmpeg::concat(&parts, out, &self.work_dir), est, &session.game, &clips_dir, "recording", when)
+        };
         let _ = std::fs::remove_dir_all(&session.dir);
         res
     }
@@ -516,17 +503,9 @@ fn plan(s: &Settings) -> Vec<(&'static str, Pipeline)> {
     out
 }
 
-fn spawn(
-    root: &Path,
-    id: u64,
-    s: &Settings,
-    encoder: &'static str,
-    pipeline: Pipeline,
-) -> Result<(Child, Option<AudioPump>, PathBuf), String> {
-    let dir = root.join(format!("run-{id}"));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    // Keep a little more than one clip of history, plus slack for saving.
-    let wrap = (s.clip_seconds as f64 / SEGMENT_SECS).ceil() as u32 + 6;
+type Spawned = (Child, Option<AudioPump>, Arc<Ring>, Arc<Mutex<String>>);
+
+fn spawn(s: &Settings, encoder: &'static str, pipeline: Pipeline) -> Result<Spawned, String> {
     let audio = s.any_audio();
 
     let mut cmd = if audio { ffmpeg::command_with_stdin() } else { ffmpeg::command() };
@@ -572,19 +551,29 @@ fn spawn(
     let native_height = win::monitors().get(s.monitor as usize).map(|m| m.height.max(0) as u32);
     cmd.args(ffmpeg::encoder_args(encoder, s.video_kbps_at(native_height), s.fps, true));
     cmd.args(["-force_key_frames", "expr:gte(t,n_forced*2)"]);
-    cmd.args(["-f", "segment", "-segment_time", "2", "-segment_format", "mpegts", "-reset_timestamps", "1"]);
-    cmd.args(["-segment_wrap", &wrap.to_string()]);
-    cmd.args(["-segment_list_type", "csv", "-segment_list_size", &(wrap - 2).to_string(), "-segment_list"]);
-    cmd.arg(dir.join("list.csv"));
-    cmd.arg(dir.join("seg_%03d.ts"));
-
-    let log = std::fs::File::create(dir.join("ffmpeg.log")).map_err(|e| e.to_string())?;
-    cmd.stdout(Stdio::null()).stderr(Stdio::from(log));
+    cmd.args(["-f", "mpegts", "pipe:1"]);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.stdin(if audio { Stdio::piped() } else { Stdio::null() });
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Could not start FFmpeg ({}): {e}", ffmpeg::path().display()))?;
+    // Keep one clip of history, plus slack for the chunk that closes while saving.
+    let ring = Ring::new(s.clip_seconds as f64 + 2.0 * SEGMENT_SECS);
+    if let Some(out) = child.stdout.take() {
+        ring.pump(out);
+    }
+    let log = Arc::new(Mutex::new(String::new()));
+    if let Some(err) = child.stderr.take() {
+        let log = log.clone();
+        std::thread::spawn(move || {
+            for line in BufReader::new(err).lines().map_while(Result::ok) {
+                if !line.trim().is_empty() {
+                    *log.lock() = line;
+                }
+            }
+        });
+    }
     let pump = if audio {
         child.stdin.take().map(|stdin| {
             AudioPump::start(
@@ -601,7 +590,7 @@ fn spawn(
     } else {
         None
     };
-    Ok((child, pump, dir))
+    Ok((child, pump, ring, log))
 }
 
 fn stop_run(mut run: Run) {
@@ -610,68 +599,56 @@ fn stop_run(mut run: Run) {
     if let Some(a) = run.audio.take() {
         a.stop();
     }
-    let dir = run.dir.clone();
-    // Delete the old ring buffer a moment later, once file handles are closed.
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_secs(2));
-        let _ = std::fs::remove_dir_all(dir);
-    });
 }
 
-fn read_list(dir: &Path) -> Vec<Segment> {
-    let Ok(text) = std::fs::read_to_string(dir.join("list.csv")) else {
-        return Vec::new();
-    };
-    let mut segs: Vec<Segment> = text
-        .lines()
-        .filter_map(|l| {
-            let mut it = l.split(',');
-            let file = it.next()?.trim().trim_matches('"');
-            let start = it.next()?.trim().parse().ok()?;
-            let end = it.next()?.trim().parse().ok()?;
-            Some(Segment { file: dir.join(file), start, end })
-        })
-        .collect();
-    segs.sort_by(|a, b| a.start.total_cmp(&b.start));
-    segs
-}
-
-fn copy_new_parts(session: &mut Session, run_id: u64, dir: &Path) {
+/// Appends chunks that closed since the last call to the session's part file.
+fn write_new_chunks(session: &mut Session, run_id: u64, ring: &Ring) {
     if session.run_id != run_id {
-        // Capture restarted: the new run's timeline starts at zero.
+        // Capture restarted: the new run's chunks count from 1 and need a new part.
+        close_part(session);
         session.run_id = run_id;
-        session.from_time = 0.0;
+        session.last_seq = 0;
     }
-    for seg in read_list(dir) {
-        if seg.start + 0.01 < session.from_time {
-            continue;
+    let chunks = ring.after(session.last_seq);
+    let Some(last) = chunks.last().map(|c| c.seq) else {
+        return;
+    };
+    let new_part = session.part.is_none();
+    if new_part {
+        let path = session.dir.join(format!("part_{:04}.ts", session.parts.len()));
+        match File::create(&path) {
+            Ok(f) => {
+                session.parts.push(path);
+                session.part = Some(BufWriter::new(f));
+            }
+            Err(e) => {
+                log::warn!("could not create {}: {e}", path.display());
+                return;
+            }
         }
-        let key = format!("{run_id}:{:.3}", seg.start);
-        if session.seen.contains(&key) {
-            continue;
+    }
+    // Headers once per part. The chunks also carry FFmpeg's own PAT and PMT.
+    let headers = if new_part { ring.headers() } else { Vec::new() };
+    if let Some(w) = session.part.as_mut() {
+        if let Err(e) = ring::write_ts(w, &headers, &chunks) {
+            log::warn!("could not write recording: {e}");
         }
-        let dst = session.dir.join(format!("part_{:06}.ts", session.parts.len()));
-        if std::fs::copy(&seg.file, &dst).is_ok() {
-            session.seen.insert(key);
-            session.parts.push(dst);
-        }
+    }
+    session.last_seq = last;
+}
+
+fn close_part(session: &mut Session) {
+    if let Some(mut w) = session.part.take() {
+        use std::io::Write;
+        let _ = w.flush();
     }
 }
 
-fn wait_for(mut cond: impl FnMut() -> bool, timeout: Duration) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < timeout {
-        if cond() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(80));
+fn tail(log: &Mutex<String>) -> String {
+    let line = log.lock().clone();
+    if line.is_empty() {
+        "FFmpeg exited".into()
+    } else {
+        line
     }
-    false
-}
-
-fn tail(path: &Path) -> String {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|t| t.lines().rev().find(|l| !l.trim().is_empty()).map(str::to_string))
-        .unwrap_or_else(|| "FFmpeg exited".into())
 }

@@ -43,20 +43,22 @@ To work on the UI only, run `npm run dev` and open http://localhost:1420. In a b
 ## How it works
 
 ```
-ddagrab (GPU frames) ──► NVENC / AMF / QSV ──► 2-second .ts segments in a ring buffer
+ddagrab (GPU frames) ──► NVENC / AMF / QSV ──► MPEG-TS on stdout ──► 2-second chunks in RAM
 WASAPI loopback + mic ──► Rust mixer (48 kHz) ──► FFmpeg stdin ──┘
 ```
 
-- One FFmpeg process writes 2-second segments into a ring buffer in `%LOCALAPPDATA%\app.rewind.clips\buffer`. The ring holds a little more than one clip.
-- **Save clip** waits for the current segment to close. Then it joins the newest segments into an MP4 without re-encoding. Saving is almost instant and costs no quality.
-- **Record** copies each finished segment aside and joins them when you stop.
+- One FFmpeg process writes an MPEG-TS stream to Rewind. Rewind cuts it at each keyframe (every 2 s) and keeps a little more than one clip in RAM. The buffer writes nothing to disk.
+- RAM use is about the bitrate times the clip length. At "high" on a 1440p display, that is about 100 MB for 30 s and about 1 GB for 5 min.
+- **Save clip** waits for the current chunk to close. Then it remuxes the newest chunks into an MP4 without re-encoding. Saving is almost instant and costs no quality.
+- **Record** writes each finished chunk to a file in `%LOCALAPPDATA%\app.rewind.clips\sessions` and makes an MP4 when you stop.
 - Scaling to 1440p, 1080p, or 720p happens on the GPU (`scale_d3d11`), so frames stay off the CPU at every resolution.
 - If the first capture method fails, Rewind tries the next one: GPU zero-copy, then GPU with a frame copy, then CPU.
 - Export and trim re-encode, so cuts are exact to the frame.
 
 | File | Job |
 | --- | --- |
-| `src-tauri/src/recorder.rs` | Capture process, ring buffer, clip save, recording, restarts |
+| `src-tauri/src/recorder.rs` | Capture process, clip save, recording, restarts |
+| `src-tauri/src/ring.rs` | In-memory replay buffer: cuts the TS stream at keyframes |
 | `src-tauri/src/audio.rs` | System and mic capture, resampling, mixing |
 | `src-tauri/src/gate.rs` | Microphone noise gate |
 | `src-tauri/src/ffmpeg.rs` | Encoder detection, join, thumbnails, export |

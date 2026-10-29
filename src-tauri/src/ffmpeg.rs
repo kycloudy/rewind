@@ -234,6 +234,34 @@ pub fn concat(parts: &[PathBuf], out: &Path, work_dir: &Path) -> Result<(), Stri
     res
 }
 
+/// Remuxes an MPEG-TS stream, written to FFmpeg's stdin by `feed`, into a faststart MP4.
+pub fn remux_ts(
+    out: &Path,
+    feed: impl FnOnce(&mut std::process::ChildStdin) -> std::io::Result<()> + Send + 'static,
+) -> Result<(), String> {
+    let mut child = command_with_stdin()
+        .args(["-loglevel", "error", "-y", "-f", "mpegts", "-i", "pipe:0"])
+        .args(["-map", "0", "-c", "copy", "-movflags", "+faststart"])
+        .arg(out)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Could not start FFmpeg: {e}"))?;
+    let mut stdin = child.stdin.take().ok_or("FFmpeg has no stdin")?;
+    // Write on another thread so a full stderr pipe cannot block both sides.
+    let writer = std::thread::spawn(move || feed(&mut stdin));
+    let res = child.wait_with_output().map_err(|e| e.to_string())?;
+    let fed = writer.join().unwrap_or_else(|_| Err(std::io::Error::other("writer panicked")));
+    if res.status.success() {
+        fed.map_err(|e| format!("Could not write the clip: {e}"))
+    } else {
+        let err = String::from_utf8_lossy(&res.stderr);
+        let last = err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("unknown error");
+        Err(format!("FFmpeg failed: {last}"))
+    }
+}
+
 pub fn thumbnail(video: &Path, out: &Path, at: f64) -> Result<(), String> {
     run(command()
         .args(["-loglevel", "error", "-y", "-ss", &format!("{at:.2}"), "-i"])
