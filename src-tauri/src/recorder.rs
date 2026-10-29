@@ -502,11 +502,15 @@ fn label(encoder: &str) -> &'static str {
 
 /// Capture strategies to try, fastest first.
 fn plan(s: &Settings) -> Vec<(&'static str, Pipeline)> {
-    let enc = ffmpeg::resolve_encoder(&s.encoder);
+    let h264 = ffmpeg::resolve_encoder(&s.encoder, "h264");
+    let wanted = ffmpeg::resolve_encoder(&s.encoder, &s.codec);
     let mut out = Vec::new();
-    if ffmpeg::vendor(enc) != Vendor::Cpu {
-        out.push((enc, Pipeline::ZeroCopy));
-        out.push((enc, Pipeline::Download));
+    // If the HEVC or AV1 encoder fails to start, fall back to the same GPU's H.264.
+    for enc in [wanted, h264] {
+        if ffmpeg::vendor(enc) != Vendor::Cpu && !out.iter().any(|(e, _)| *e == enc) {
+            out.push((enc, Pipeline::ZeroCopy));
+            out.push((enc, Pipeline::Download));
+        }
     }
     out.push(("libx264", Pipeline::Download));
     out

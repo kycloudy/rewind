@@ -76,22 +76,45 @@ pub enum Vendor {
 pub struct EncoderInfo {
     pub name: &'static str,
     pub label: &'static str,
+    /// "h264" | "hevc" | "av1"
+    pub codec: &'static str,
+    /// "nvidia" | "amd" | "intel" | "cpu"
+    pub vendor: &'static str,
 }
 
-pub const ENCODERS: [EncoderInfo; 4] = [
-    EncoderInfo { name: "h264_nvenc", label: "NVIDIA NVENC" },
-    EncoderInfo { name: "h264_amf", label: "AMD AMF" },
-    EncoderInfo { name: "h264_qsv", label: "Intel Quick Sync" },
-    EncoderInfo { name: "libx264", label: "CPU (x264)" },
+const fn enc(name: &'static str, label: &'static str, codec: &'static str, vendor: &'static str) -> EncoderInfo {
+    EncoderInfo { name, label, codec, vendor }
+}
+
+/// H.264 first: `resolve_encoder` treats the first available H.264 entry as the automatic choice.
+pub const ENCODERS: [EncoderInfo; 10] = [
+    enc("h264_nvenc", "NVIDIA NVENC", "h264", "nvidia"),
+    enc("h264_amf", "AMD AMF", "h264", "amd"),
+    enc("h264_qsv", "Intel Quick Sync", "h264", "intel"),
+    enc("libx264", "CPU (x264)", "h264", "cpu"),
+    enc("hevc_nvenc", "NVIDIA NVENC", "hevc", "nvidia"),
+    enc("hevc_amf", "AMD AMF", "hevc", "amd"),
+    enc("hevc_qsv", "Intel Quick Sync", "hevc", "intel"),
+    enc("av1_nvenc", "NVIDIA NVENC", "av1", "nvidia"),
+    enc("av1_amf", "AMD AMF", "av1", "amd"),
+    enc("av1_qsv", "Intel Quick Sync", "av1", "intel"),
 ];
 
 pub fn vendor(encoder: &str) -> Vendor {
-    match encoder {
-        "h264_nvenc" => Vendor::Nvidia,
-        "h264_amf" => Vendor::Amd,
-        "h264_qsv" => Vendor::Intel,
-        _ => Vendor::Cpu,
+    if encoder.ends_with("_nvenc") {
+        Vendor::Nvidia
+    } else if encoder.ends_with("_amf") {
+        Vendor::Amd
+    } else if encoder.ends_with("_qsv") {
+        Vendor::Intel
+    } else {
+        Vendor::Cpu
     }
+}
+
+/// "h264" | "hevc" | "av1"
+pub fn codec(encoder: &str) -> &'static str {
+    ENCODERS.iter().find(|e| e.name == encoder).map(|e| e.codec).unwrap_or("h264")
 }
 
 static AVAILABLE: OnceLock<Vec<&'static str>> = OnceLock::new();
@@ -121,16 +144,43 @@ pub fn available_encoders() -> &'static [&'static str] {
     })
 }
 
-pub fn resolve_encoder(choice: &str) -> &'static str {
+/// The H.264 encoder for `choice`: the chosen one if it works here, else the first that does.
+fn resolve_h264(choice: &str) -> &'static str {
     let avail = available_encoders();
-    if let Some(e) = avail.iter().find(|e| **e == choice) {
+    if let Some(e) = avail.iter().find(|e| **e == choice && codec(e) == "h264") {
         return e;
     }
-    avail.first().copied().unwrap_or("libx264")
+    avail.iter().find(|e| codec(e) == "h264").copied().unwrap_or("libx264")
+}
+
+/// The encoder to use for `choice` and `wanted` codec ("h264" | "hevc" | "av1").
+/// The GPU is picked as for H.264. If that GPU cannot encode `wanted`, this returns its H.264 encoder.
+pub fn resolve_encoder(choice: &str, wanted: &str) -> &'static str {
+    let base = resolve_h264(choice);
+    if wanted == "h264" {
+        return base;
+    }
+    let vendor = vendor(base);
+    available_encoders()
+        .iter()
+        .find(|e| codec(e) == wanted && self::vendor(e) == vendor)
+        .copied()
+        .unwrap_or(base)
+}
+
+/// Bitrate relative to H.264 for the same quality.
+fn bitrate_percent(encoder: &str) -> u32 {
+    match codec(encoder) {
+        "hevc" => 70,
+        "av1" => 60,
+        _ => 100,
+    }
 }
 
 /// Encoder flags for a given bitrate (kbit/s). Shared by capture and export.
+/// `kbps` is the H.264 bitrate; HEVC and AV1 get less for the same quality.
 pub fn encoder_args(encoder: &str, kbps: u32, fps: u32, live: bool) -> Vec<String> {
+    let kbps = kbps * bitrate_percent(encoder) / 100;
     let mut a: Vec<String> = vec!["-c:v".into(), encoder.into()];
     let push = |a: &mut Vec<String>, s: &[&str]| a.extend(s.iter().map(|x| x.to_string()));
     match vendor(encoder) {
@@ -171,11 +221,15 @@ pub fn concat(parts: &[PathBuf], out: &Path, work_dir: &Path) -> Result<(), Stri
         .map(|p| format!("file '{}'\n", p.to_string_lossy().replace('\\', "/").replace('\'', "'\\''")))
         .collect();
     std::fs::write(&list, body).map_err(|e| e.to_string())?;
-    let res = run(command()
-        .args(["-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
+    let mut cmd = command();
+    cmd.args(["-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i"])
         .arg(&list)
-        .args(["-map", "0", "-c", "copy", "-movflags", "+faststart"])
-        .arg(out));
+        .args(["-map", "0", "-c", "copy", "-movflags", "+faststart"]);
+    // FFmpeg tags HEVC in MP4 as "hev1", which many players reject. They expect "hvc1".
+    if parts.first().and_then(|p| probe_video_codec(p)).as_deref() == Some("hevc") {
+        cmd.args(["-tag:v", "hvc1"]);
+    }
+    let res = run(cmd.arg(out));
     let _ = std::fs::remove_file(&list);
     res
 }
@@ -216,6 +270,14 @@ pub fn probe_duration(video: &Path) -> Option<f64> {
         secs = secs * 60.0 + part.parse::<f64>().ok()?;
     }
     Some(secs)
+}
+
+/// Name of the first video codec in a file ("h264", "hevc", "av1"), read from `ffmpeg -i`.
+pub fn probe_video_codec(video: &Path) -> Option<String> {
+    let out = command().arg("-i").arg(video).stderr(Stdio::piped()).stdout(Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stderr);
+    let line = text.lines().find(|l| l.contains("Video: "))?;
+    Some(line.split("Video: ").nth(1)?.split(|c: char| c == ' ' || c == ',').next()?.to_string())
 }
 
 pub struct ExportJob<'a> {
