@@ -1,0 +1,65 @@
+[package]
+name = "rewind"
+version = "0.1.0"
+description = "Lightweight gameplay clipping for Windows"
+edition = "2021"
+
+[lib]
+name = "rewind_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "protocol-asset", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cpal = "0.16"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+parking_lot = "0.12"
+log = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.60", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_Media_Audio",
+  "Win32_System_DataExchange",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+# Lets `RUSTFLAGS="--cfg wincheck" cargo check` type-check the Windows code on Linux.
+[target.'cfg(not(windows))'.dependencies]
+windows-sys = { version = "0.60", optional = true, features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_Media_Audio",
+  "Win32_System_DataExchange",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[features]
+wincheck = ["dep:windows-sys"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(wincheck)'] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
