@@ -1,20 +1,25 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { api, pickFolder, type Devices, type Settings } from "../api";
+import { api, pickFolder, type Devices, type Settings, type UpdateInfo } from "../api";
 import { keyLabel } from "../format";
 
 type Props = {
   settings: Settings;
   onSaved: (s: Settings) => void;
   onError: (text: string) => void;
+  update: UpdateInfo | null;
+  updating: number | null;
+  onCheckUpdate: () => Promise<void>;
+  onInstallUpdate: () => void;
 };
 
 const CODEC_LABELS: Record<Settings["codec"], string> = { h264: "H.264", hevc: "HEVC", av1: "AV1" };
 const CODEC_ORDER: Settings["codec"][] = ["h264", "hevc", "av1"];
 
-export function SettingsView({ settings, onSaved, onError }: Props) {
+export function SettingsView({ settings, onSaved, onError, update, updating, onCheckUpdate, onInstallUpdate }: Props) {
   const [draft, setDraft] = useState(settings);
   const [devices, setDevices] = useState<Devices | null>(null);
   const [saving, setSaving] = useState(false);
+  const [checking, setChecking] = useState(false);
   const dirty = JSON.stringify(draft) !== JSON.stringify(settings);
 
   useEffect(() => setDraft(settings), [settings]);
@@ -254,6 +259,32 @@ export function SettingsView({ settings, onSaved, onError }: Props) {
           </Row>
           <Row label="Start with Windows">
             <Switch checked={draft.launchAtLogin} onChange={(v) => set("launchAtLogin", v)} label="Start with Windows" />
+          </Row>
+        </Group>
+
+        <Group title="Updates">
+          <Row label={update ? `Rewind ${update.current}` : "Rewind"}>
+            {updating !== null ? (
+              <button className="btn" disabled>
+                {updating < 1 ? `Downloading ${Math.round(updating * 100)}%` : "Installing"}
+              </button>
+            ) : update?.available ? (
+              <button className="btn btn-primary" onClick={onInstallUpdate}>
+                Update to {update.available}
+              </button>
+            ) : (
+              <button
+                className="btn"
+                disabled={checking}
+                onClick={async () => {
+                  setChecking(true);
+                  await onCheckUpdate();
+                  setChecking(false);
+                }}
+              >
+                {checking ? "Checking" : "Check for updates"}
+              </button>
+            )}
           </Row>
         </Group>
       </div>

@@ -65,6 +65,8 @@ export type Devices = {
   encoders: { name: string; label: string; codec: "h264" | "hevc" | "av1"; vendor: string }[];
 };
 
+export type UpdateInfo = { current: string; available: string | null };
+
 /** True inside the desktop app. In a plain browser the UI runs on sample data. */
 export const isDesktop = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -104,6 +106,8 @@ export const api = {
   filmstrip: (id: string) => call<string>("filmstrip", { id }),
   exportClip: (id: string, start: number, end: number, targetMb: number | null) =>
     call<Clip>("export_clip", { req: { id, start, end, targetMb } }),
+  checkUpdate: () => call<UpdateInfo>("check_update"),
+  installUpdate: () => call<void>("install_update"),
 };
 
 export async function pickFolder(): Promise<string | null> {

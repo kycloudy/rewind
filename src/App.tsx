@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, on, type Clip, type Settings, type Status } from "./api";
+import { api, on, type Clip, type Settings, type Status, type UpdateInfo } from "./api";
 import { Sidebar } from "./components/Sidebar";
 import { Library, type Filter } from "./components/Library";
 import { Player } from "./components/Player";
@@ -15,6 +15,9 @@ export function App() {
   const [view, setView] = useState<View>({ kind: "library" });
   const [filter, setFilter] = useState<Filter>({ kind: "all" });
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [appUpdate, setAppUpdate] = useState<UpdateInfo | null>(null);
+  /** Download progress from 0 to 1 while an update installs. */
+  const [updating, setUpdating] = useState<number | null>(null);
 
   const toast = useCallback((t: Omit<Toast, "id">) => {
     const id = Math.random().toString(36).slice(2);
@@ -23,6 +26,26 @@ export function App() {
   }, []);
 
   const refresh = useCallback(() => api.clips().then(setClips), []);
+
+  const installUpdate = useCallback(async () => {
+    setUpdating(0);
+    try {
+      await api.installUpdate();
+    } catch (e) {
+      toast({ text: String(e), error: true });
+      setUpdating(null);
+    }
+  }, [toast]);
+
+  const checkUpdate = useCallback(async () => {
+    try {
+      const u = await api.checkUpdate();
+      setAppUpdate(u);
+      if (!u.available) toast({ text: "Rewind is up to date" });
+    } catch (e) {
+      toast({ text: String(e), error: true });
+    }
+  }, [toast]);
 
   useEffect(() => {
     refresh();
@@ -38,11 +61,26 @@ export function App() {
         });
       }),
       on<string>("notice", (text) => toast({ text, error: true })),
+      on<number>("update-progress", setUpdating),
       on<Settings>("settings", setSettings),
     ];
     return () => offs.forEach((f) => f());
   }, [refresh, toast]);
 
+  useEffect(() => {
+    let live = true;
+    api
+      .checkUpdate()
+      .then((u) => {
+        if (!live) return;
+        setAppUpdate(u);
+        if (u.available) toast({ text: `Rewind ${u.available} is available`, action: { label: "Update", run: installUpdate } });
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [toast, installUpdate]);
   // The first time a full-screen guess starts capture, offer to undo it.
   const offered = useRef(new Set<string>());
   const guess = status?.game?.guessed && settings?.gamesOnly ? status.game : null;
@@ -98,6 +136,10 @@ export function App() {
               toast({ text: "Settings saved" });
             }}
             onError={(text) => toast({ text, error: true })}
+            update={appUpdate}
+            updating={updating}
+            onCheckUpdate={checkUpdate}
+            onInstallUpdate={installUpdate}
           />
         ) : current ? (
           <Player
