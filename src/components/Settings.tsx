@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { fetchReleases, type Release } from "../releases";
 import { api, pickFolder, type Devices, type Settings, type UpdateInfo } from "../api";
 import { keyLabel } from "../format";
+import { Markdown } from "./Markdown";
 
 type Props = {
   settings: Settings;
@@ -20,11 +22,13 @@ export function SettingsView({ settings, onSaved, onError, update, updating, onC
   const [devices, setDevices] = useState<Devices | null>(null);
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [releases, setReleases] = useState<Release[] | null>(null);
   const dirty = JSON.stringify(draft) !== JSON.stringify(settings);
 
   useEffect(() => setDraft(settings), [settings]);
   useEffect(() => {
     api.devices().then(setDevices);
+    fetchReleases().then(setReleases, () => setReleases([]));
   }, []);
 
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setDraft((d) => ({ ...d, [k]: v }));
@@ -287,6 +291,20 @@ export function SettingsView({ settings, onSaved, onError, update, updating, onC
             )}
           </Row>
         </Group>
+
+        {releases && releases.length > 0 && (
+          <Group title="Release notes">
+            {releases.map((r) => (
+              <article className="release" key={r.tag}>
+                <header>
+                  <h3>{r.name}</h3>
+                  <time>{new Date(r.date).toLocaleDateString()}</time>
+                </header>
+                <Markdown source={r.body} />
+              </article>
+            ))}
+          </Group>
+        )}
       </div>
 
       <footer className={`savebar${dirty ? " is-shown" : ""}`} aria-hidden={!dirty}>
