@@ -125,7 +125,7 @@ function ClipTile({ clip, onOpen, onFavorite }: { clip: Clip; onOpen: () => void
     <article className="tile">
       <button className="tile-media" onClick={onOpen} aria-label={`Open ${clip.title}`}>
         {clip.thumb ? <img src={fileUrl(clip.thumb)} alt="" loading="lazy" /> : <div className="tile-blank" />}
-        <span className="tile-dur">{duration(clip.duration)}</span>
+        <span className="tile-dur">{duration(clip.trim ? clip.trim.end - clip.trim.start : clip.duration)}</span>
         {clip.kind !== "clip" && <span className="tile-kind">{clip.kind === "recording" ? "Recording" : "Export"}</span>}
       </button>
       <div className="tile-meta">
