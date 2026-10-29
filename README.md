@@ -35,7 +35,7 @@ Rewind installs an update only if the installer has a valid signature. The relea
 1. On your PC, make a key pair:
 
    ```powershell
-   npx tauri signer generate -w "$HOME\.tauri\rewind.key"
+   npx @tauri-apps/cli signer generate -w "$HOME\.tauri\rewind.key"
    ```
 
    Enter a password when it asks. Keep the key file and the password safe. If you lose them, installed copies cannot update.
