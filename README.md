@@ -24,9 +24,9 @@ Clips save to `Videos\Rewind\<Game>\` as MP4 (H.264, HEVC, or AV1, and AAC).
 1. Create a new GitHub repository and push this folder to the `main` branch.
 2. Open the **Actions** tab. Wait for **Build Windows installer** to finish (about 10 minutes).
 3. Open the run and download the **Rewind-setup** artifact.
-4. Run `Rewind_0.1.0_x64-setup.exe`.
+4. Run `Rewind_0.0.4_x64-setup.exe`.
 
-To publish a release, push a tag such as `v0.1.1`. The workflow sets the app version from the tag and attaches the installer to the release.
+To publish a release, push a tag such as `v0.0.5`. The workflow sets the app version from the tag and attaches the installer to the release.
 
 ### Set up in-app updates (one time)
 
