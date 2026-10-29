@@ -16,10 +16,26 @@ type Props = {
 
 type Job = "trim" | "10" | "50" | null;
 
+// Volume and mute persist across clips and app restarts.
+const stored = <T,>(key: string, fallback: T): T => {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : (JSON.parse(v) as T);
+  } catch {
+    return fallback;
+  }
+};
+const store = (key: string, value: unknown) => {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+};
+
 export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }: Props) {
   const video = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
-  const [muted, setMuted] = useState(false);
+  const [muted, setMuted] = useState(() => stored("player.muted", false));
+  const [volume, setVolume] = useState(() => stored("player.volume", 1));
   const [time, setTime] = useState(0);
   const [dur, setDur] = useState(clip.duration || 1);
   const [range, setRange] = useState<[number, number]>([0, clip.duration || 1]);
@@ -28,6 +44,25 @@ export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }
   const [job, setJob] = useState<Job>(null);
   const [progress, setProgress] = useState(0);
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const silent = muted || volume === 0;
+
+  useEffect(() => {
+    if (video.current) video.current.volume = volume;
+    store("player.volume", volume);
+  }, [volume]);
+
+  useEffect(() => store("player.muted", muted), [muted]);
+
+  const changeVolume = (v: number) => {
+    setVolume(v);
+    if (v > 0) setMuted(false);
+  };
+
+  const toggleMute = () => {
+    if (volume === 0) changeVolume(1);
+    else setMuted((m) => !m);
+  };
 
   const trimmed = range[0] > 0.05 || range[1] < dur - 0.05;
 
@@ -52,7 +87,7 @@ export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }
     } else v.pause();
   };
 
-  // Keyboard: Space play, I/O set trim points, J/L skip 5 s, Esc back.
+  // Keyboard: Space play, I/O set trim points, J/L skip 5 s, M mute, Esc back.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement;
@@ -65,6 +100,7 @@ export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }
       else if (e.key === "o") setRange(([s]) => [s, Math.max(t, s + 0.5)]);
       else if (e.key === "j") seek(Math.max(0, t - 5));
       else if (e.key === "l") seek(Math.min(dur, t + 5));
+      else if (e.key === "m") toggleMute();
       else if (e.key === "Escape") onBack();
     };
     window.addEventListener("keydown", onKey);
@@ -181,9 +217,21 @@ export function Player({ clip, onBack, onChange, onCreated, onDeleted, onToast }
             <span className="transport-time">
               {precise(time)} <span className="dim">/ {fmtDuration(dur)}</span>
             </span>
-            <button className="btn btn-icon" onClick={() => setMuted((m) => !m)} aria-label={muted ? "Unmute" : "Mute"}>
-              <Icon name={muted ? "mute" : "volume"} />
-            </button>
+            <div className="volume">
+              <button className="btn btn-icon" onClick={toggleMute} aria-label={silent ? "Unmute" : "Mute"} title="Mute (M)">
+                <Icon name={silent ? "mute" : "volume"} />
+              </button>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={muted ? 0 : volume}
+                onChange={(e) => changeVolume(Number(e.target.value))}
+                aria-label="Volume"
+                aria-valuetext={`${Math.round((muted ? 0 : volume) * 100)}%`}
+              />
+            </div>
           </div>
 
           <Trimmer
