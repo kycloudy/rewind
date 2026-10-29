@@ -66,6 +66,7 @@ let settings: Settings = {
   micVolume: 1,
   micGate: false,
   micGateThreshold: -45,
+  micDenoise: false,
   clipHotkey: "F8",
   recordHotkey: "F9",
   clipsDir: "C:\\Users\\Husa\\Videos\\Rewind",

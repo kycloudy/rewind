@@ -197,6 +197,9 @@ export function SettingsView({ settings, onSaved, onError }: Props) {
                   <span className="slider-val">{Math.round(draft.micVolume * 100)}%</span>
                 </div>
               </Row>
+              <Row label="Noise suppression">
+                <Switch checked={draft.micDenoise} onChange={(v) => set("micDenoise", v)} label="Noise suppression" />
+              </Row>
               <Row label="Noise gate">
                 <Switch checked={draft.micGate} onChange={(v) => set("micGate", v)} label="Noise gate" />
               </Row>
