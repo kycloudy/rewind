@@ -8,6 +8,9 @@ type Props = {
   onError: (text: string) => void;
 };
 
+const CODEC_LABELS: Record<Settings["codec"], string> = { h264: "H.264", hevc: "HEVC", av1: "AV1" };
+const CODEC_ORDER: Settings["codec"][] = ["h264", "hevc", "av1"];
+
 export function SettingsView({ settings, onSaved, onError }: Props) {
   const [draft, setDraft] = useState(settings);
   const [devices, setDevices] = useState<Devices | null>(null);
@@ -32,6 +35,13 @@ export function SettingsView({ settings, onSaved, onError }: Props) {
     }
   };
 
+  const encoders = devices?.encoders ?? [];
+  const gpus = encoders.filter((e) => e.codec === "h264");
+  // Codecs the chosen GPU can encode. H.264 always works.
+  const codecs = (vendor?: string) =>
+    CODEC_ORDER.filter((c) => c === "h264" || encoders.some((e) => e.codec === c && e.vendor === vendor));
+  const chosenVendor = gpus.find((g) => g.name === draft.encoder)?.vendor ?? gpus[0]?.vendor;
+
   return (
     <div className="settings">
       <header className="lib-head">
@@ -45,6 +55,16 @@ export function SettingsView({ settings, onSaved, onError }: Props) {
           <Row label="Only in games">
             <Switch checked={draft.gamesOnly} onChange={(v) => set("gamesOnly", v)} label="Only in games" />
           </Row>
+          {draft.gamesOnly && (
+            <Row label="Other games">
+              <input
+                type="text"
+                value={draft.gameApps.join(", ")}
+                placeholder="game.exe, other.exe"
+                onChange={(e) => set("gameApps", e.target.value.split(",").map((g) => g.trim()).filter(Boolean))}
+              />
+            </Row>
+          )}
           <Row label="Clip length">
             <Segmented
               value={String(draft.clipSeconds)}
@@ -106,11 +126,28 @@ export function SettingsView({ settings, onSaved, onError }: Props) {
             </select>
           </Row>
           <Row label="Encoder">
-            <select value={draft.encoder} onChange={(e) => set("encoder", e.target.value)}>
-              <option value="auto">Automatic{devices?.encoders[0] ? ` (${devices.encoders[0].label})` : ""}</option>
-              {devices?.encoders.map((e) => (
+            <select
+              value={draft.encoder}
+              onChange={(e) => {
+                const encoder = e.target.value;
+                set("encoder", encoder);
+                const vendor = gpus.find((g) => g.name === encoder)?.vendor ?? gpus[0]?.vendor;
+                if (!codecs(vendor).includes(draft.codec)) set("codec", "h264");
+              }}
+            >
+              <option value="auto">Automatic{gpus[0] ? ` (${gpus[0].label})` : ""}</option>
+              {gpus.map((e) => (
                 <option key={e.name} value={e.name}>
                   {e.label}
+                </option>
+              ))}
+            </select>
+          </Row>
+          <Row label="Codec">
+            <select value={draft.codec} onChange={(e) => set("codec", e.target.value as Settings["codec"])}>
+              {codecs(chosenVendor).map((c) => (
+                <option key={c} value={c}>
+                  {CODEC_LABELS[c]}
                 </option>
               ))}
             </select>

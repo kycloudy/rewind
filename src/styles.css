@@ -73,7 +73,8 @@ kbd {
   white-space: nowrap;
 }
 
-select {
+select,
+.row-control input[type="text"] {
   background: var(--raised);
   border: 1px solid var(--line);
   border-radius: var(--r-ctl);
@@ -883,7 +884,8 @@ select {
   min-width: 0;
 }
 
-.row-control select {
+.row-control select,
+.row-control input[type="text"] {
   width: 280px;
 }
 

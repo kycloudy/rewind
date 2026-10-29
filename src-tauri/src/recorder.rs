@@ -234,7 +234,7 @@ impl Recorder {
         let mut inner = self.inner.lock();
         let mut changed = false;
 
-        if let Some((exe, title)) = win::foreground_app() {
+        if let Some((exe, title, path)) = win::foreground_app() {
             let me = std::env::current_exe()
                 .ok()
                 .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_lowercase()))
@@ -242,7 +242,7 @@ impl Recorder {
             let exe_l = exe.to_lowercase();
             if !exe.is_empty() && exe_l != me && exe_l != "explorer" && exe_l != "searchhost" {
                 inner.last_game = Some(win::game_name(&exe, &title));
-                if win::looks_like_game(&exe, win::foreground_full_screen()) {
+                if win::looks_like_game(&exe, &path, win::foreground_full_screen(), &inner.settings.game_apps) {
                     inner.game_seen = Some(Instant::now());
                 }
             }
@@ -502,11 +502,15 @@ fn label(encoder: &str) -> &'static str {
 
 /// Capture strategies to try, fastest first.
 fn plan(s: &Settings) -> Vec<(&'static str, Pipeline)> {
-    let enc = ffmpeg::resolve_encoder(&s.encoder);
+    let h264 = ffmpeg::resolve_encoder(&s.encoder, "h264");
+    let wanted = ffmpeg::resolve_encoder(&s.encoder, &s.codec);
     let mut out = Vec::new();
-    if ffmpeg::vendor(enc) != Vendor::Cpu {
-        out.push((enc, Pipeline::ZeroCopy));
-        out.push((enc, Pipeline::Download));
+    // If the HEVC or AV1 encoder fails to start, fall back to the same GPU's H.264.
+    for enc in [wanted, h264] {
+        if ffmpeg::vendor(enc) != Vendor::Cpu && !out.iter().any(|(e, _)| *e == enc) {
+            out.push((enc, Pipeline::ZeroCopy));
+            out.push((enc, Pipeline::Download));
+        }
     }
     out.push(("libx264", Pipeline::Download));
     out

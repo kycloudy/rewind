@@ -14,8 +14,8 @@ pub struct Monitor {
     pub primary: bool,
 }
 
-/// The app the player is looking at: (exe stem, window title).
-pub fn foreground_app() -> Option<(String, String)> {
+/// The app the player is looking at: (exe stem, window title, exe path).
+pub fn foreground_app() -> Option<(String, String, String)> {
     imp::foreground_app()
 }
 
@@ -32,9 +32,50 @@ const NOT_GAMES: &[&str] = &[
     "searchhost", "shellexperiencehost", "startmenuexperiencehost", "vivaldi", "vlc", "wmplayer",
 ];
 
-/// Guesses whether the foreground app is a game, from its exe stem.
-pub fn looks_like_game(exe: &str, full_screen: bool) -> bool {
-    full_screen && !exe.is_empty() && !NOT_GAMES.contains(&exe.to_lowercase().as_str())
+/// Folders where game launchers install games, lower case with `\\` separators.
+const GAME_DIRS: &[&str] = &[
+    "\\steamapps\\common\\",
+    "\\epic games\\",
+    "\\gog galaxy\\games\\",
+    "\\gog games\\",
+    "\\riot games\\",
+    "\\xboxgames\\",
+    "\\ubisoft game launcher\\games\\",
+    "\\ea games\\",
+    "\\origin games\\",
+    "\\battle.net\\games\\",
+];
+
+/// Game apps that run in a normal window, and launchers or tools that sit in the same folders.
+const KNOWN_GAMES: &[&str] = &[
+    "cs2", "dota2", "eldenring", "fortniteclient-win64-shipping", "gta5", "javaw", "league of legends",
+    "minecraft", "overwatch", "r5apex", "rocketleague", "terraria", "valorant-win64-shipping", "wow",
+];
+
+/// Tools that install under game folders but are not games.
+const GAME_FOLDER_TOOLS: &[&str] = &[
+    "crashreporter", "crashhandler", "epicgameslauncher", "steam", "steamwebhelper", "unins000", "vc_redist.x64",
+];
+
+/// Guesses whether the foreground app is a game.
+///
+/// A full-screen app counts unless it is a known media or browser app. A
+/// windowed app counts when it is on the user's list, is a known game, or
+/// runs from a game launcher's install folder.
+pub fn looks_like_game(exe: &str, path: &str, full_screen: bool, user_games: &[String]) -> bool {
+    let exe = exe.to_lowercase();
+    if exe.is_empty() || NOT_GAMES.contains(&exe.as_str()) {
+        return false;
+    }
+    let exe = exe.trim_end_matches(".exe");
+    if full_screen || KNOWN_GAMES.contains(&exe) {
+        return true;
+    }
+    if user_games.iter().any(|g| g.trim().trim_end_matches(".exe").eq_ignore_ascii_case(exe)) {
+        return true;
+    }
+    let path = path.to_lowercase().replace('/', "\\");
+    !GAME_FOLDER_TOOLS.contains(&exe) && GAME_DIRS.iter().any(|d| path.contains(d))
 }
 
 pub fn monitors() -> Vec<Monitor> {
@@ -143,7 +184,7 @@ mod imp {
     const CF_HDROP: u32 = 15;
     const MONITORINFOF_PRIMARY: u32 = 1;
 
-    pub fn foreground_app() -> Option<(String, String)> {
+    pub fn foreground_app() -> Option<(String, String, String)> {
         unsafe {
             let hwnd = GetForegroundWindow();
             if hwnd.is_null() {
@@ -157,11 +198,12 @@ mod imp {
             GetWindowThreadProcessId(hwnd, &mut pid);
             let proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             let mut exe = String::new();
+            let mut full = String::new();
             if !proc.is_null() {
                 let mut buf = [0u16; 520];
                 let mut len = buf.len() as u32;
                 if QueryFullProcessImageNameW(proc, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0 {
-                    let full = String::from_utf16_lossy(&buf[..len as usize]);
+                    full = String::from_utf16_lossy(&buf[..len as usize]);
                     exe = Path::new(&full)
                         .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
@@ -169,7 +211,7 @@ mod imp {
                 }
                 CloseHandle(proc);
             }
-            Some((exe, title))
+            Some((exe, title, full))
         }
     }
 
@@ -296,7 +338,7 @@ mod imp {
     use super::Monitor;
     use std::path::Path;
 
-    pub fn foreground_app() -> Option<(String, String)> {
+    pub fn foreground_app() -> Option<(String, String, String)> {
         None
     }
     pub fn foreground_full_screen() -> bool {
@@ -322,10 +364,28 @@ mod tests {
 
     #[test]
     fn games() {
-        assert!(looks_like_game("cs2", true));
-        assert!(!looks_like_game("cs2", false));
-        assert!(!looks_like_game("Chrome", true));
-        assert!(!looks_like_game("", true));
+        assert!(looks_like_game("cs2", "", true, &[]));
+        assert!(!looks_like_game("cs2x", "", false, &[]));
+        assert!(!looks_like_game("Chrome", "", true, &[]));
+        assert!(!looks_like_game("", "", true, &[]));
+    }
+
+    #[test]
+    fn windowed_games() {
+        assert!(looks_like_game("cs2", "", false, &[]));
+        let steam = r"C:\Program Files (x86)\Steam\steamapps\common\Hades\Hades.exe";
+        assert!(looks_like_game("Hades", steam, false, &[]));
+        assert!(!looks_like_game("steamwebhelper", steam, false, &[]));
+        assert!(!looks_like_game("chrome", steam, false, &[]));
+        assert!(looks_like_game("Stardew Valley", "", false, &["stardew valley.exe".into()]));
+        assert!(looks_like_game("mygame", "", false, &["MyGame".into()]));
+    }
+
+    #[test]
+    fn desktop_apps_are_not_games() {
+        let code = r"C:\Users\a\AppData\Local\Programs\Microsoft VS Code\Code.exe";
+        assert!(!looks_like_game("Code", code, false, &[]));
+        assert!(!looks_like_game("notepad", r"C:\Windows\notepad.exe", false, &[]));
     }
 
     #[test]
