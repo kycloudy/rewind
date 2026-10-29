@@ -116,3 +116,18 @@ export async function pickFolder(): Promise<string | null> {
   const r = await open({ directory: true });
   return typeof r === "string" ? r : null;
 }
+
+export async function appVersion(): Promise<string> {
+  if (!isDesktop) return "dev";
+  const { getVersion } = await import("@tauri-apps/api/app");
+  return getVersion();
+}
+
+export async function openUrl(url: string): Promise<void> {
+  if (!isDesktop) {
+    window.open(url, "_blank", "noopener");
+    return;
+  }
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  await openUrl(url);
+}

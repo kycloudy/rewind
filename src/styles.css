@@ -1197,3 +1197,12 @@ select,
   padding: 8px 10px;
   overflow-x: auto;
 }
+
+.about-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.muted {
+  color: var(--muted);
+}
