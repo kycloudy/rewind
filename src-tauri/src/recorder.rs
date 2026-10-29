@@ -38,6 +38,10 @@ const GAME_DWELL: Duration = Duration::from_secs(3);
 /// How often to look for newly installed games.
 const GAME_SCAN_EVERY: Duration = Duration::from_secs(60);
 
+fn display_label(monitor: Option<u32>) -> String {
+    monitor.map_or_else(|| "display unknown".into(), |m| format!("display {}", m + 1))
+}
+
 /// The game that keeps capture on.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -49,6 +53,19 @@ pub struct Game {
     pub guessed: bool,
 }
 
+/// The last app in front, other than Rewind, and what Rewind made of it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Seen {
+    /// Exe file name without ".exe". Empty when Windows did not give it.
+    pub app: String,
+    /// Index of the display the app is on. `None` when Rewind could not match it.
+    pub display: Option<u32>,
+    pub full_screen: bool,
+    pub is_game: bool,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -56,6 +73,7 @@ pub struct Status {
     /// Games-only mode is on and no game is in front, so capture is paused.
     pub waiting_for_game: bool,
     pub game: Option<Game>,
+    pub seen: Option<Seen>,
     pub recording: bool,
     /// Unix ms when the current recording started.
     pub recording_since: Option<i64>,
@@ -275,9 +293,27 @@ impl Recorder {
                 .ok()
                 .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
                 .unwrap_or_default();
-            let game = (!fg.exe.eq_ignore_ascii_case(&me) && fg.monitor == Some(inner.settings.monitor))
-                .then(|| games::detect(&fg, &installed, &inner.settings.game_apps, &inner.settings.not_games))
-                .flatten();
+            let on_display = fg.monitor == Some(inner.settings.monitor);
+            let mine = fg.exe.eq_ignore_ascii_case(&me);
+            let (verdict, why) = games::judge(&fg, &installed, &inner.settings.game_apps, &inner.settings.not_games);
+            // Rewind itself is in front while the player reads this, so keep the app seen before it.
+            if !mine {
+                let seen = Seen {
+                    app: fg.exe.clone(),
+                    display: fg.monitor,
+                    full_screen: fg.full_screen,
+                    is_game: verdict.is_some() && on_display,
+                    reason: match (&verdict, on_display) {
+                        (Some(_), false) => format!("Looks like a game, but it is not on the display set in Settings ({})", display_label(fg.monitor)),
+                        _ => why.into(),
+                    },
+                };
+                if inner.status.seen.as_ref() != Some(&seen) {
+                    inner.status.seen = Some(seen);
+                    changed = true;
+                }
+            }
+            let game = (!mine && on_display).then_some(verdict).flatten();
             if let Some(game) = game {
                 // A new match must hold for a moment, so a short full-screen video or overlay does not start capture.
                 let since = match &inner.candidate {
