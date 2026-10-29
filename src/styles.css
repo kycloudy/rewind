@@ -1126,3 +1126,83 @@ select,
 .action.is-busy {
   opacity: 1;
 }
+
+.release {
+  padding: 14px 16px;
+}
+
+.release + .release {
+  border-top: 1px solid var(--line);
+}
+
+.release header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.release h3 {
+  margin: 0;
+  font-size: var(--fs-md);
+  font-weight: 600;
+}
+
+.release time {
+  color: var(--faint);
+  font-size: var(--fs-xs);
+}
+
+.md {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.md p,
+.md ul,
+.md pre {
+  margin: 6px 0 0;
+}
+
+.md ul {
+  padding-left: 18px;
+}
+
+.md h4 {
+  margin: 10px 0 0;
+  font-size: var(--fs-sm);
+  color: var(--text);
+}
+
+.md strong {
+  color: var(--text);
+}
+
+.md code,
+.md pre {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: var(--fs-xs);
+  background: var(--raised);
+  border-radius: 4px;
+}
+
+.md code {
+  padding: 1px 4px;
+}
+
+.md pre {
+  padding: 8px 10px;
+  overflow-x: auto;
+}
+
+.about-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.muted {
+  color: var(--muted);
+}

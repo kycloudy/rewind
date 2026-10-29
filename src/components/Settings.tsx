@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { api, pickFolder, type Devices, type Settings, type UpdateInfo } from "../api";
+import { fetchReleases, type Release } from "../releases";
+import { api, appVersion, openUrl, pickFolder, type Devices, type Settings, type UpdateInfo } from "../api";
 import { keyLabel } from "../format";
+import { Markdown } from "./Markdown";
 
 type Props = {
   settings: Settings;
@@ -12,6 +14,8 @@ type Props = {
   onInstallUpdate: () => void;
 };
 
+const REPO_URL = "https://github.com/kycloudy/rewind";
+
 const CODEC_LABELS: Record<Settings["codec"], string> = { h264: "H.264", hevc: "HEVC", av1: "AV1" };
 const CODEC_ORDER: Settings["codec"][] = ["h264", "hevc", "av1"];
 
@@ -20,11 +24,16 @@ export function SettingsView({ settings, onSaved, onError, update, updating, onC
   const [devices, setDevices] = useState<Devices | null>(null);
   const [saving, setSaving] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [releases, setReleases] = useState<Release[] | null>(null);
+  const [version, setVersion] = useState("");
+  const [showNotes, setShowNotes] = useState(false);
   const dirty = JSON.stringify(draft) !== JSON.stringify(settings);
 
   useEffect(() => setDraft(settings), [settings]);
   useEffect(() => {
     api.devices().then(setDevices);
+    appVersion().then(setVersion);
+    fetchReleases().then(setReleases, () => setReleases([]));
   }, []);
 
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setDraft((d) => ({ ...d, [k]: v }));
@@ -262,30 +271,53 @@ export function SettingsView({ settings, onSaved, onError, update, updating, onC
           </Row>
         </Group>
 
-        <Group title="Updates">
-          <Row label={update ? `Rewind ${update.current}` : "Rewind"}>
-            {updating !== null ? (
-              <button className="btn" disabled>
-                {updating < 1 ? `Downloading ${Math.round(updating * 100)}%` : "Installing"}
-              </button>
-            ) : update?.available ? (
-              <button className="btn btn-primary" onClick={onInstallUpdate}>
-                Update to {update.available}
-              </button>
-            ) : (
-              <button
-                className="btn"
-                disabled={checking}
-                onClick={async () => {
-                  setChecking(true);
-                  await onCheckUpdate();
-                  setChecking(false);
-                }}
-              >
-                {checking ? "Checking" : "Check for updates"}
-              </button>
-            )}
+        <Group title="About">
+          <Row label="Rewind">
+            <span className="muted">{version}</span>
           </Row>
+          <Row label="GitHub">
+            <button className="btn" onClick={() => openUrl(REPO_URL)}>
+              kycloudy/rewind
+            </button>
+          </Row>
+          <Row label="Updates">
+            <div className="about-actions">
+              <button className="btn" onClick={() => setShowNotes((v) => !v)} aria-expanded={showNotes}>
+                What's new
+              </button>
+              {updating !== null ? (
+                <button className="btn" disabled>
+                  {updating < 1 ? `Downloading ${Math.round(updating * 100)}%` : "Installing"}
+                </button>
+              ) : update?.available ? (
+                <button className="btn btn-primary" onClick={onInstallUpdate}>
+                  Update to {update.available}
+                </button>
+              ) : (
+                <button
+                  className="btn"
+                  disabled={checking}
+                  onClick={async () => {
+                    setChecking(true);
+                    await onCheckUpdate();
+                    setChecking(false);
+                  }}
+                >
+                  {checking ? "Checking" : "Check for updates"}
+                </button>
+              )}
+            </div>
+          </Row>
+          {showNotes &&
+            (releases ?? []).map((r) => (
+              <article className="release" key={r.tag}>
+                <header>
+                  <h3>{r.name}</h3>
+                  <time>{new Date(r.date).toLocaleDateString()}</time>
+                </header>
+                <Markdown source={r.body} />
+              </article>
+            ))}
         </Group>
       </div>
 
