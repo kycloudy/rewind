@@ -103,32 +103,51 @@ pub struct Detected {
 
 /// Decides whether `fg` is a game. The user's lists decide first.
 pub fn detect(fg: &Foreground, installed: &[Installed], user_games: &[String], not_games: &[String]) -> Option<Detected> {
+    judge(fg, installed, user_games, not_games).0
+}
+
+/// Like `detect`, and says why. The reason is shown in Settings.
+pub fn judge(
+    fg: &Foreground,
+    installed: &[Installed],
+    user_games: &[String],
+    not_games: &[String],
+) -> (Option<Detected>, &'static str) {
     let exe = fg.exe.to_lowercase();
     let exe = exe.trim_end_matches(".exe");
-    if exe.is_empty() || listed(not_games, exe) {
-        return None;
+    if exe.is_empty() {
+        return (None, "Windows did not give the app's exe path");
+    }
+    if listed(not_games, exe) {
+        return (None, "On your Not games list");
     }
     let path = fg.path.to_lowercase().replace('/', "\\");
     let store = installed.iter().filter(|g| path.starts_with(&g.dir)).max_by_key(|g| g.dir.len());
-    let found = |guessed| {
+    let found = |guessed, why| {
         let name = store.map_or_else(|| game_name(&fg.exe, &fg.title), |g| g.name.clone());
-        Some(Detected { name, guessed })
+        (Some(Detected { name, guessed }), why)
     };
     if listed(user_games, exe) {
-        return found(false);
+        return found(false, "On your Other games list");
     }
     if NOT_GAMES.contains(&exe) {
-        return None;
+        return (None, "Known app that is not a game");
     }
     // Minecraft Java Edition runs as javaw, like every other Java app.
     let minecraft = matches!(exe, "java" | "javaw") && fg.title.starts_with("Minecraft");
-    if store.is_some() || minecraft || KNOWN_GAMES.contains(&exe) || GAME_DIRS.iter().any(|d| path.contains(d)) {
-        return found(false);
+    if store.is_some() {
+        return found(false, "Installed by a game launcher");
+    }
+    if minecraft || KNOWN_GAMES.contains(&exe) {
+        return found(false, "Known game");
+    }
+    if GAME_DIRS.iter().any(|d| path.contains(d)) {
+        return found(false, "Runs from a game folder");
     }
     if fg.full_screen {
-        return found(true);
+        return found(true, "Full screen, but not a known game");
     }
-    None
+    (None, "Not full screen and not a known game")
 }
 
 /// True when `exe` (lower case, no ".exe") is on a user list of app names.
