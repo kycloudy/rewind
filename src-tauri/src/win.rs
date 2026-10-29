@@ -14,22 +14,49 @@ pub struct Monitor {
     pub primary: bool,
 }
 
-/// The app the player is looking at: (exe stem, window title, exe path).
-pub fn foreground_app() -> Option<(String, String, String)> {
-    imp::foreground_app()
+/// The window the player is looking at.
+#[derive(Debug, Clone, Default)]
+pub struct Foreground {
+    /// Exe file name without ".exe", e.g. "cs2".
+    pub exe: String,
+    pub title: String,
+    /// Full path of the exe.
+    pub path: String,
+    /// Index of the window's monitor, in the order `monitors` lists them.
+    pub monitor: Option<u32>,
+    /// True when the window is borderless and covers its whole monitor,
+    /// as full-screen and borderless-windowed games do.
+    pub full_screen: bool,
 }
 
-/// True when the foreground window is borderless and covers its whole monitor,
-/// as full-screen and borderless-windowed games do.
-pub fn foreground_full_screen() -> bool {
-    imp::foreground_full_screen()
+pub fn foreground() -> Option<Foreground> {
+    imp::foreground()
 }
 
-/// Apps that often run full screen but are not games.
+/// Apps that are not games, even when they run full screen or from a game folder.
+/// Lower-case exe names without ".exe".
 const NOT_GAMES: &[&str] = &[
-    "applicationframehost", "arc", "brave", "chrome", "explorer", "firefox", "lockapp", "mpc-be64",
-    "mpc-hc", "mpc-hc64", "mpv", "msedge", "opera", "potplayer", "potplayermini64", "powerpnt",
-    "searchhost", "shellexperiencehost", "startmenuexperiencehost", "vivaldi", "vlc", "wmplayer",
+    // Windows
+    "applicationframehost", "cmd", "explorer", "lockapp", "screenclippinghost", "searchhost", "searchui",
+    "shellexperiencehost", "snippingtool", "startmenuexperiencehost", "systemsettings", "taskmgr",
+    "textinputhost", "windowsinternal.composableshell.experiences.textinput.inputapp", "windowsterminal",
+    "winstore.app", "wwahost",
+    // Browsers
+    "arc", "brave", "chrome", "firefox", "msedge", "opera", "opera_gx", "vivaldi",
+    // Video, music, and photos
+    "kodi", "microsoft.media.player", "mpc-be64", "mpc-hc", "mpc-hc64", "mpv", "photos", "plex", "potplayer",
+    "potplayermini64", "spotify", "video.ui", "vlc", "wmplayer",
+    // Chat, calls, and office
+    "discord", "excel", "ms-teams", "olk", "onenote", "outlook", "powerpnt", "skype", "slack", "teams",
+    "winword", "zoom",
+    // Remote desktops and virtual machines
+    "moonlight", "msrdc", "mstsc", "parsecd", "virtualboxvm", "vmconnect", "vmware", "vmware-vmx",
+    // Game launchers and tools
+    "battle.net", "eadesktop", "epicgameslauncher", "galaxyclient", "losslessscaling", "medal", "nvidia overlay",
+    "obs64", "origin", "riotclientservices", "riotclientux", "soundpad", "steam", "steamwebhelper", "upc",
+    "uplay", "wallpaper32", "wallpaper64",
+    // Code editors
+    "code", "cursor", "devenv",
 ];
 
 /// Folders where game launchers install games, lower case with `\\` separators.
@@ -46,10 +73,10 @@ const GAME_DIRS: &[&str] = &[
     "\\battle.net\\games\\",
 ];
 
-/// Game apps that run in a normal window, and launchers or tools that sit in the same folders.
+/// Games that often run in a normal window.
 const KNOWN_GAMES: &[&str] = &[
-    "cs2", "dota2", "eldenring", "fortniteclient-win64-shipping", "gta5", "javaw", "league of legends",
-    "minecraft", "overwatch", "r5apex", "rocketleague", "terraria", "valorant-win64-shipping", "wow",
+    "cs2", "dota2", "eldenring", "fortniteclient-win64-shipping", "gta5", "league of legends", "minecraft",
+    "overwatch", "r5apex", "rocketleague", "terraria", "valorant-win64-shipping", "wow",
 ];
 
 /// Tools that install under game folders but are not games.
@@ -59,22 +86,27 @@ const GAME_FOLDER_TOOLS: &[&str] = &[
 
 /// Guesses whether the foreground app is a game.
 ///
-/// A full-screen app counts unless it is a known media or browser app. A
-/// windowed app counts when it is on the user's list, is a known game, or
-/// runs from a game launcher's install folder.
-pub fn looks_like_game(exe: &str, path: &str, full_screen: bool, user_games: &[String]) -> bool {
-    let exe = exe.to_lowercase();
-    if exe.is_empty() || NOT_GAMES.contains(&exe.as_str()) {
-        return false;
-    }
+/// An app on the user's list always counts. Other apps count when they are a
+/// known game, run from a game launcher's install folder, or run full screen,
+/// unless they are a known non-game.
+pub fn looks_like_game(fg: &Foreground, user_games: &[String]) -> bool {
+    let exe = fg.exe.to_lowercase();
     let exe = exe.trim_end_matches(".exe");
-    if full_screen || KNOWN_GAMES.contains(&exe) {
-        return true;
+    if exe.is_empty() {
+        return false;
     }
     if user_games.iter().any(|g| g.trim().trim_end_matches(".exe").eq_ignore_ascii_case(exe)) {
         return true;
     }
-    let path = path.to_lowercase().replace('/', "\\");
+    if NOT_GAMES.contains(&exe) {
+        return false;
+    }
+    // Minecraft Java Edition runs as javaw, like every other Java app.
+    let minecraft = matches!(exe, "java" | "javaw") && fg.title.starts_with("Minecraft");
+    if fg.full_screen || minecraft || KNOWN_GAMES.contains(&exe) {
+        return true;
+    }
+    let path = fg.path.to_lowercase().replace('/', "\\");
     !GAME_FOLDER_TOOLS.contains(&exe) && GAME_DIRS.iter().any(|d| path.contains(d))
 }
 
@@ -167,7 +199,7 @@ mod imp {
     use std::sync::OnceLock;
     use windows_sys::Win32::Foundation::{CloseHandle, GlobalFree, HWND, LPARAM, RECT};
     use windows_sys::Win32::Graphics::Gdi::{
-        EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONULL,
+        EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
     use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
     use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
@@ -184,7 +216,7 @@ mod imp {
     const CF_HDROP: u32 = 15;
     const MONITORINFOF_PRIMARY: u32 = 1;
 
-    pub fn foreground_app() -> Option<(String, String, String)> {
+    pub fn foreground() -> Option<super::Foreground> {
         unsafe {
             let hwnd = GetForegroundWindow();
             if hwnd.is_null() {
@@ -198,80 +230,81 @@ mod imp {
             GetWindowThreadProcessId(hwnd, &mut pid);
             let proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             let mut exe = String::new();
-            let mut full = String::new();
+            let mut path = String::new();
             if !proc.is_null() {
                 let mut buf = [0u16; 520];
                 let mut len = buf.len() as u32;
                 if QueryFullProcessImageNameW(proc, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0 {
-                    full = String::from_utf16_lossy(&buf[..len as usize]);
-                    exe = Path::new(&full)
+                    path = String::from_utf16_lossy(&buf[..len as usize]);
+                    exe = Path::new(&path)
                         .file_stem()
                         .map(|s| s.to_string_lossy().into_owned())
                         .unwrap_or_default();
                 }
                 CloseHandle(proc);
             }
-            Some((exe, title, full))
+
+            let mut info: MONITORINFO = std::mem::zeroed();
+            info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            let hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut r: RECT = std::mem::zeroed();
+            let (monitor, full_screen) = if !hmon.is_null()
+                && GetMonitorInfoW(hmon, &mut info) != 0
+                && GetWindowRect(hwnd, &mut r) != 0
+            {
+                let m = info.rcMonitor;
+                let monitor = monitor_list().iter().position(|(_, x)| *x == rect(&m)).map(|i| i as u32);
+                let covers = r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom;
+                (monitor, covers && !is_desktop(hwnd) && GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION != WS_CAPTION)
+            } else {
+                (None, false)
+            };
+            Some(super::Foreground { exe, title, path, monitor, full_screen })
         }
     }
 
-    pub fn foreground_full_screen() -> bool {
-        unsafe {
-            let hwnd = GetForegroundWindow();
-            if hwnd.is_null() {
-                return false;
-            }
-            // The desktop itself fills the screen too.
-            let mut class = [0u16; 32];
-            let n = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32);
-            let class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
-            if class == "Progman" || class == "WorkerW" {
-                return false;
-            }
-            // A maximized app window has a title bar; a full-screen game has none.
-            if GetWindowLongW(hwnd, GWL_STYLE) as u32 & WS_CAPTION == WS_CAPTION {
-                return false;
-            }
-            let hmon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
-            if hmon.is_null() {
-                return false;
-            }
-            let mut info: MONITORINFO = std::mem::zeroed();
-            info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
-            let mut r: RECT = std::mem::zeroed();
-            if GetMonitorInfoW(hmon, &mut info) == 0 || GetWindowRect(hwnd, &mut r) == 0 {
-                return false;
-            }
-            let m = info.rcMonitor;
-            r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom
-        }
+    /// The desktop fills the screen too.
+    unsafe fn is_desktop(hwnd: HWND) -> bool {
+        let mut class = [0u16; 32];
+        let n = GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32);
+        let class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
+        class == "Progman" || class == "WorkerW"
+    }
+
+    fn rect(r: &RECT) -> (i32, i32, i32, i32) {
+        (r.left, r.top, r.right, r.bottom)
     }
 
     unsafe extern "system" fn monitor_cb(hmon: HMONITOR, _hdc: HDC, _rect: *mut RECT, data: LPARAM) -> i32 {
-        let list = &mut *(data as *mut Vec<(bool, i32, i32)>);
+        let list = &mut *(data as *mut Vec<(bool, (i32, i32, i32, i32))>);
         let mut info: MONITORINFO = std::mem::zeroed();
         info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
         if GetMonitorInfoW(hmon, &mut info) != 0 {
-            let r = info.rcMonitor;
-            list.push((info.dwFlags & MONITORINFOF_PRIMARY != 0, r.right - r.left, r.bottom - r.top));
+            list.push((info.dwFlags & MONITORINFOF_PRIMARY != 0, rect(&info.rcMonitor)));
         }
         1
     }
 
-    pub fn monitors() -> Vec<Monitor> {
-        let mut raw: Vec<(bool, i32, i32)> = Vec::new();
+    /// Monitors as (primary, rect), primary first.
+    fn monitor_list() -> Vec<(bool, (i32, i32, i32, i32))> {
+        let mut raw: Vec<(bool, (i32, i32, i32, i32))> = Vec::new();
         unsafe {
             EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(monitor_cb), &mut raw as *mut _ as LPARAM);
         }
         // Desktop Duplication lists the primary output first on most systems.
         raw.sort_by_key(|m| !m.0);
-        raw.into_iter()
+        raw
+    }
+
+    pub fn monitors() -> Vec<Monitor> {
+        monitor_list()
+            .into_iter()
             .enumerate()
-            .map(|(i, (primary, w, h))| Monitor {
+            .map(|(i, (primary, (l, t, r, b)))| Monitor {
                 index: i as u32,
                 name: if primary { "Main display".into() } else { format!("Display {}", i + 1) },
-                width: w,
-                height: h,
+                width: r - l,
+                height: b - t,
                 primary,
             })
             .collect()
@@ -338,11 +371,8 @@ mod imp {
     use super::Monitor;
     use std::path::Path;
 
-    pub fn foreground_app() -> Option<(String, String, String)> {
+    pub fn foreground() -> Option<super::Foreground> {
         None
-    }
-    pub fn foreground_full_screen() -> bool {
-        false
     }
     pub fn monitors() -> Vec<Monitor> {
         vec![Monitor { index: 0, name: "Main display".into(), width: 1920, height: 1080, primary: true }]
@@ -360,32 +390,54 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
-    use super::{game_name, looks_like_game};
+    use super::{game_name, looks_like_game, Foreground};
+
+    fn app(exe: &str, path: &str, full_screen: bool) -> Foreground {
+        Foreground { exe: exe.into(), path: path.into(), full_screen, ..Default::default() }
+    }
 
     #[test]
     fn games() {
-        assert!(looks_like_game("cs2", "", true, &[]));
-        assert!(!looks_like_game("cs2x", "", false, &[]));
-        assert!(!looks_like_game("Chrome", "", true, &[]));
-        assert!(!looks_like_game("", "", true, &[]));
+        assert!(looks_like_game(&app("cs2", "", true), &[]));
+        assert!(!looks_like_game(&app("cs2x", "", false), &[]));
+        assert!(!looks_like_game(&app("Chrome", "", true), &[]));
+        assert!(!looks_like_game(&app("", "", true), &[]));
     }
 
     #[test]
     fn windowed_games() {
-        assert!(looks_like_game("cs2", "", false, &[]));
+        assert!(looks_like_game(&app("cs2", "", false), &[]));
         let steam = r"C:\Program Files (x86)\Steam\steamapps\common\Hades\Hades.exe";
-        assert!(looks_like_game("Hades", steam, false, &[]));
-        assert!(!looks_like_game("steamwebhelper", steam, false, &[]));
-        assert!(!looks_like_game("chrome", steam, false, &[]));
-        assert!(looks_like_game("Stardew Valley", "", false, &["stardew valley.exe".into()]));
-        assert!(looks_like_game("mygame", "", false, &["MyGame".into()]));
+        assert!(looks_like_game(&app("Hades", steam, false), &[]));
+        assert!(!looks_like_game(&app("steamwebhelper", steam, false), &[]));
+        assert!(!looks_like_game(&app("chrome", steam, false), &[]));
+        assert!(looks_like_game(&app("Stardew Valley", "", false), &["stardew valley.exe".into()]));
+        assert!(looks_like_game(&app("mygame", "", false), &["MyGame".into()]));
+    }
+
+    #[test]
+    fn full_screen_apps_that_are_not_games() {
+        for exe in ["Microsoft.Media.Player", "mstsc", "Discord", "WINWORD", "ScreenClippingHost", "Spotify"] {
+            assert!(!looks_like_game(&app(exe, "", true), &[]), "{exe}");
+        }
+        // The user's list wins.
+        assert!(looks_like_game(&app("vlc", "", false), &["vlc".into()]));
+    }
+
+    #[test]
+    fn minecraft_but_not_every_java_app() {
+        let mut mc = app("javaw", "", false);
+        mc.title = "Minecraft* 1.21.1 - Multiplayer (3rd-party Server)".into();
+        assert!(looks_like_game(&mc, &[]));
+        mc.title = "JDownloader 2".into();
+        assert!(!looks_like_game(&mc, &[]));
     }
 
     #[test]
     fn desktop_apps_are_not_games() {
         let code = r"C:\Users\a\AppData\Local\Programs\Microsoft VS Code\Code.exe";
-        assert!(!looks_like_game("Code", code, false, &[]));
-        assert!(!looks_like_game("notepad", r"C:\Windows\notepad.exe", false, &[]));
+        assert!(!looks_like_game(&app("Code", code, false), &[]));
+        assert!(!looks_like_game(&app("notepad", r"C:\Windows\notepad.exe", false), &[]));
     }
 
     #[test]

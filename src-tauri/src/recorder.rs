@@ -32,6 +32,8 @@ const START_GRACE: Duration = Duration::from_secs(6);
 /// In games-only mode, keep capturing this long after the game leaves the
 /// foreground, so a quick alt-tab does not wipe the buffer.
 const GAME_LINGER: Duration = Duration::from_secs(60);
+/// An app must look like a game for this long before capture starts.
+const GAME_DWELL: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -86,9 +88,12 @@ struct Inner {
     next_run_id: u64,
     session: Option<Session>,
     status: Status,
+    /// The last game in the foreground. Clips are named after it.
     last_game: Option<String>,
-    /// When a full-screen game was last in the foreground.
+    /// When a game was last in the foreground.
     game_seen: Option<Instant>,
+    /// The app that looks like a game now, and since when.
+    candidate: Option<(String, Instant)>,
     restarts: u32,
 }
 
@@ -127,6 +132,7 @@ impl Recorder {
                 session: None,
                 last_game: None,
                 game_seen: None,
+                candidate: None,
                 restarts: 0,
             }),
             saving: AtomicBool::new(false),
@@ -233,17 +239,28 @@ impl Recorder {
         let mut inner = self.inner.lock();
         let mut changed = false;
 
-        if let Some((exe, title, path)) = win::foreground_app() {
+        if let Some(fg) = win::foreground() {
             let me = std::env::current_exe()
                 .ok()
-                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_lowercase()))
+                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
                 .unwrap_or_default();
-            let exe_l = exe.to_lowercase();
-            if !exe.is_empty() && exe_l != me && exe_l != "explorer" && exe_l != "searchhost" {
-                inner.last_game = Some(win::game_name(&exe, &title));
-                if win::looks_like_game(&exe, &path, win::foreground_full_screen(), &inner.settings.game_apps) {
+            let game = !fg.exe.eq_ignore_ascii_case(&me)
+                && fg.monitor == Some(inner.settings.monitor)
+                && win::looks_like_game(&fg, &inner.settings.game_apps);
+            if game {
+                // A new match must hold for a moment, so a short full-screen video or overlay does not start capture.
+                let since = match &inner.candidate {
+                    Some((exe, t)) if *exe == fg.exe => *t,
+                    _ => Instant::now(),
+                };
+                inner.candidate = Some((fg.exe.clone(), since));
+                let capturing = inner.game_seen.is_some_and(|t| t.elapsed() < GAME_LINGER);
+                if capturing || since.elapsed() >= GAME_DWELL {
+                    inner.last_game = Some(win::game_name(&fg.exe, &fg.title));
                     inner.game_seen = Some(Instant::now());
                 }
+            } else {
+                inner.candidate = None;
             }
         }
 
