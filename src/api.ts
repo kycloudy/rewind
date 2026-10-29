@@ -29,11 +29,13 @@ export type Status = {
 export type Settings = {
   bufferEnabled: boolean;
   gamesOnly: boolean;
+  gameApps: string[];
   clipSeconds: number;
   fps: number;
   quality: "low" | "medium" | "high" | "ultra";
   resolution: "native" | "1440" | "1080" | "720";
   encoder: string;
+  codec: "h264" | "hevc" | "av1";
   monitor: number;
   systemAudio: boolean;
   mic: boolean;
@@ -51,7 +53,7 @@ export type Settings = {
 export type Devices = {
   monitors: { index: number; name: string; width: number; height: number; primary: boolean }[];
   mics: string[];
-  encoders: { name: string; label: string }[];
+  encoders: { name: string; label: string; codec: "h264" | "hevc" | "av1"; vendor: string }[];
 };
 
 /** True inside the desktop app. In a plain browser the UI runs on sample data. */

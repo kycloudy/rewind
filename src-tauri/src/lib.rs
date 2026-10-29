@@ -17,7 +17,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, State, WebviewWindowBuilder};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
@@ -187,7 +187,7 @@ async fn export_clip(app: AppHandle, state: S<'_>, req: ExportRequest) -> Result
         let start = req.start.clamp(0.0, src.duration);
         let end = req.end.clamp(start + 0.5, src.duration.max(start + 0.5));
         let dur = end - start;
-        let encoder = ffmpeg::resolve_encoder(&settings.encoder);
+        let encoder = ffmpeg::resolve_encoder(&settings.encoder, "h264");
 
         let (video_kbps, audio_kbps, height) = match req.target_mb {
             Some(mb) => {
@@ -324,12 +324,27 @@ fn register_hotkeys(app: &AppHandle, s: &Settings) -> Result<(), String> {
     Ok(())
 }
 
+/// Shows the main window. The window is destroyed on close so its WebView2 process
+/// does not use memory while the player is in a game, so it is created again here.
 fn show_main(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.unminimize();
-        let _ = w.show();
-        let _ = w.set_focus();
-    }
+    let window = match app.get_webview_window("main") {
+        Some(w) => w,
+        None => {
+            let Some(config) = app.config().app.windows.iter().find(|w| w.label == "main").cloned() else {
+                return;
+            };
+            match WebviewWindowBuilder::from_config(app, &config).and_then(|b| b.build()) {
+                Ok(w) => w,
+                Err(e) => {
+                    log::warn!("main window: {e}");
+                    return;
+                }
+            }
+        }
+    };
+    let _ = window.unminimize();
+    let _ = window.show();
+    let _ = window.set_focus();
 }
 
 fn build_tray(app: &AppHandle) -> tauri::Result<()> {
@@ -439,13 +454,6 @@ pub fn run() {
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
-            // Closing the window keeps Rewind running in the tray, like other clipping apps.
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
-            }
-        })
         .invoke_handler(tauri::generate_handler![
             get_status,
             get_settings,
@@ -463,6 +471,13 @@ pub fn run() {
             filmstrip,
             export_clip,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Rewind");
+        .build(tauri::generate_context!())
+        .expect("error while building Rewind")
+        .run(|_app, event| {
+            // Closing the window keeps Rewind running in the tray, like other clipping apps.
+            // Only an exit with a code (Quit in the tray menu) stops the app.
+            if let RunEvent::ExitRequested { code: None, api, .. } = event {
+                api.prevent_exit();
+            }
+        });
 }
