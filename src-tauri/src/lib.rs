@@ -1,6 +1,7 @@
 mod audio;
 mod denoise;
 mod ffmpeg;
+mod games;
 mod gate;
 mod library;
 mod recorder;
@@ -8,7 +9,7 @@ mod ring;
 mod settings;
 mod win;
 
-use library::{Clip, Library};
+use library::{Clip, Library, Trim};
 use parking_lot::Mutex;
 use recorder::{Recorder, Status};
 use serde::Serialize;
@@ -27,7 +28,10 @@ struct AppState {
     settings_file: PathBuf,
     library: Arc<Library>,
     recorder: Arc<Recorder>,
+    /// Short-lived trimmed copies made for the clipboard.
+    shares_dir: PathBuf,
     record_item: Mutex<Option<MenuItem<tauri::Wry>>>,
+    not_game_item: Mutex<Option<MenuItem<tauri::Wry>>>,
 }
 
 type S<'a> = State<'a, AppState>;
@@ -67,6 +71,11 @@ fn save_settings(app: AppHandle, state: S, settings: Settings) -> Result<Setting
     let s = settings.clone();
     std::thread::spawn(move || rec.apply(s, false));
     Ok(settings)
+}
+
+#[tauri::command]
+fn not_a_game(app: AppHandle, exe: String) -> Result<Settings, String> {
+    mark_not_a_game(&app, &exe)
 }
 
 #[tauri::command]
@@ -120,7 +129,24 @@ fn delete_clip(state: S, id: String) -> Result<(), String> {
         let _ = std::fs::remove_file(t);
     }
     let _ = std::fs::remove_file(state.recorder.thumbs_dir().join(format!("{id}-strip.jpg")));
+    remove_shares(&state.shares_dir, &id);
     Ok(())
+}
+
+/// Saves the trim range. The file is not changed. A range that covers the whole clip clears the trim.
+#[tauri::command]
+fn set_trim(state: S, id: String, trim: Option<Trim>) -> Result<Clip, String> {
+    state
+        .library
+        .update(&id, |c| {
+            c.trim = trim
+                .map(|t| {
+                    let start = t.start.clamp(0.0, c.duration);
+                    Trim { start, end: t.end.clamp(start, c.duration) }
+                })
+                .filter(|t| t.end - t.start >= 0.5 && (t.start > 0.05 || t.end < c.duration - 0.05));
+        })
+        .ok_or("Clip not found".into())
 }
 
 #[tauri::command]
@@ -140,10 +166,61 @@ fn open_clips_folder(state: S) {
     let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
 }
 
+/// Puts the clip on the clipboard. A trimmed clip gets a small file of just the trimmed part.
 #[tauri::command]
-fn copy_clip(state: S, id: String) -> Result<(), String> {
+async fn copy_clip(app: AppHandle, state: S<'_>, id: String) -> Result<(), String> {
     let clip = state.library.get(&id).ok_or("Clip not found")?;
-    win::copy_file_to_clipboard(&clip.path)
+    let Some(trim) = clip.trim else {
+        return win::copy_file_to_clipboard(&clip.path);
+    };
+    let shares = state.shares_dir.clone();
+    let settings = state.settings.lock().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = shares.join(format!("{}-{}-{}", clip.id, (trim.start * 1000.0) as u64, (trim.end * 1000.0) as u64));
+        let name = clip.path.file_name().map(PathBuf::from).unwrap_or_else(|| "Clip.mp4".into());
+        let out = dir.join(name).with_extension("mp4");
+        if !out.exists() {
+            remove_shares(&shares, &clip.id);
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            // A cut that starts on a keyframe needs no re-encode. Keyframes come every 2 s.
+            let key = ffmpeg::keyframe_before(&clip.path, trim.start).filter(|k| trim.start - k <= 0.25);
+            let res = match key {
+                Some(k) => ffmpeg::cut(&clip.path, &out, k, trim.end),
+                None => {
+                    let job = ffmpeg::ExportJob {
+                        input: &clip.path,
+                        output: &out,
+                        start: trim.start,
+                        end: trim.end,
+                        encoder: ffmpeg::resolve_encoder(&settings.encoder, "h264"),
+                        video_kbps: settings.video_kbps(),
+                        audio_kbps: 160,
+                        height: None,
+                        fps: settings.fps,
+                    };
+                    ffmpeg::export(&job, |p| {
+                        let _ = app.emit("export-progress", ExportProgress { id: clip.id.clone(), progress: p });
+                    })
+                }
+            };
+            if let Err(e) = res {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
+        }
+        win::copy_file_to_clipboard(&out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn remove_shares(shares: &std::path::Path, id: &str) {
+    let prefix = format!("{id}-");
+    for e in std::fs::read_dir(shares).into_iter().flatten().flatten() {
+        if e.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 /// Builds (once) a strip of frames for the trim timeline.
@@ -246,6 +323,7 @@ async fn export_clip(app: AppHandle, state: S<'_>, req: ExportRequest) -> Result
             duration,
             favorite: false,
             kind: "export".into(),
+            trim: None,
         };
         library.add(clip.clone());
         Ok(clip)
@@ -255,6 +333,28 @@ async fn export_clip(app: AppHandle, state: S<'_>, req: ExportRequest) -> Result
 }
 
 // ---------------------------------------------------------------- actions
+
+/// Adds `exe` to the "Not games" list and pauses capture if it was the game.
+fn mark_not_a_game(app: &AppHandle, exe: &str) -> Result<Settings, String> {
+    if exe.trim().is_empty() {
+        return Err("No app to mark".into());
+    }
+    let state = app.state::<AppState>();
+    let settings = {
+        let mut s = state.settings.lock();
+        s.add_not_game(exe);
+        s.save(&state.settings_file).map_err(|e| e.to_string())?;
+        s.clone()
+    };
+    let rec = state.recorder.clone();
+    let (s, exe) = (settings.clone(), exe.to_string());
+    std::thread::spawn(move || {
+        rec.apply(s, false);
+        rec.forget_game(&exe);
+    });
+    let _ = app.emit("settings", &settings);
+    Ok(settings)
+}
 
 async fn do_save_clip(app: AppHandle) -> Result<Clip, String> {
     let rec = app.state::<AppState>().recorder.clone();
@@ -352,10 +452,13 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Rewind", true, None::<&str>)?;
     let clip = MenuItem::with_id(app, "clip", "Save clip", true, None::<&str>)?;
     let record = MenuItem::with_id(app, "record", "Start recording", true, None::<&str>)?;
+    let not_game = MenuItem::with_id(app, "not_game", "Not a game", false, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&open, &clip, &record, &sep, &quit])?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&open, &clip, &record, &sep, &not_game, &sep2, &quit])?;
     *app.state::<AppState>().record_item.lock() = Some(record);
+    *app.state::<AppState>().not_game_item.lock() = Some(not_game);
 
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().cloned().expect("app icon"))
@@ -375,6 +478,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 tauri::async_runtime::spawn(async move {
                     let _ = do_toggle_recording(app).await;
                 });
+            }
+            "not_game" => {
+                let exe = app.state::<AppState>().recorder.status().game.map(|g| g.exe);
+                if let Some(exe) = exe {
+                    let _ = mark_not_a_game(app, &exe);
+                }
             }
             "quit" => {
                 app.state::<AppState>().recorder.shutdown();
@@ -409,6 +518,9 @@ pub fn run() {
             let _ = std::fs::create_dir_all(&settings.clips_dir);
 
             let library = Arc::new(Library::open(data_dir.join("library.json")));
+            // Trimmed copies from the last run are not needed any more.
+            let shares_dir = data_dir.join("shares");
+            let _ = std::fs::remove_dir_all(&shares_dir);
             let recorder = Recorder::new(&data_dir, library.clone(), settings.clone());
             {
                 let handle = handle.clone();
@@ -423,8 +535,16 @@ pub fn run() {
                         };
                         let _ = tray.set_tooltip(Some(tip));
                     }
-                    if let Some(item) = handle.state::<AppState>().record_item.lock().as_ref() {
+                    let state = handle.state::<AppState>();
+                    if let Some(item) = state.record_item.lock().as_ref() {
                         let _ = item.set_text(if st.recording { "Stop recording" } else { "Start recording" });
+                    }
+                    if let Some(item) = state.not_game_item.lock().as_ref() {
+                        let _ = match &st.game {
+                            Some(g) => item.set_text(format!("{} is not a game", g.name)),
+                            None => item.set_text("Not a game"),
+                        };
+                        let _ = item.set_enabled(st.game.is_some() && !st.recording);
                     }
                     let _ = handle.emit("status", st);
                 });
@@ -435,7 +555,9 @@ pub fn run() {
                 settings_file,
                 library,
                 recorder: recorder.clone(),
+                shares_dir,
                 record_item: Mutex::new(None),
+                not_game_item: Mutex::new(None),
             });
 
             build_tray(&handle)?;
@@ -469,8 +591,10 @@ pub fn run() {
             reveal_clip,
             open_clips_folder,
             copy_clip,
+            set_trim,
             filmstrip,
             export_clip,
+            not_a_game,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Rewind")

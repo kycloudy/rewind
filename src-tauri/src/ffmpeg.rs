@@ -308,6 +308,33 @@ pub fn probe_video_codec(video: &Path) -> Option<String> {
     Some(line.split("Video: ").nth(1)?.split(|c: char| c == ' ' || c == ',').next()?.to_string())
 }
 
+/// Time of the last keyframe at or before `t`, in seconds.
+pub fn keyframe_before(video: &Path, t: f64) -> Option<f64> {
+    let out = command()
+        .args(["-hide_banner", "-skip_frame", "nokey", "-noaccurate_seek", "-ss", &format!("{t:.3}"), "-i"])
+        .arg(video)
+        .args(["-copyts", "-map", "0:v:0", "-frames:v", "1", "-vf", "showinfo", "-f", "null", "-"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stderr);
+    text.split("pts_time:").nth(1)?.split_whitespace().next()?.parse().ok()
+}
+
+/// Copies `start..end` of a clip without re-encoding. `start` must be a keyframe.
+pub fn cut(input: &Path, output: &Path, start: f64, end: f64) -> Result<(), String> {
+    let mut cmd = command();
+    cmd.args(["-loglevel", "error", "-y", "-ss", &format!("{start:.3}"), "-i"])
+        .arg(input)
+        .args(["-t", &format!("{:.3}", end - start), "-map", "0", "-c", "copy"])
+        .args(["-avoid_negative_ts", "make_zero", "-movflags", "+faststart"]);
+    if probe_video_codec(input).as_deref() == Some("hevc") {
+        cmd.args(["-tag:v", "hvc1"]);
+    }
+    run(cmd.arg(output))
+}
+
 pub struct ExportJob<'a> {
     pub input: &'a Path,
     pub output: &'a Path,

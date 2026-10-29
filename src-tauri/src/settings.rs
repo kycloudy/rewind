@@ -10,6 +10,8 @@ pub struct Settings {
     pub games_only: bool,
     /// App names (exe stems) counted as games even in a normal window.
     pub game_apps: Vec<String>,
+    /// App names (exe stems) that never count as games.
+    pub not_games: Vec<String>,
     /// Seconds saved by the clip hotkey.
     pub clip_seconds: u32,
     pub fps: u32,
@@ -46,6 +48,7 @@ impl Default for Settings {
             buffer_enabled: true,
             games_only: true,
             game_apps: Vec::new(),
+            not_games: Vec::new(),
             clip_seconds: 30,
             fps: 60,
             quality: "high".into(),
@@ -123,6 +126,16 @@ impl Settings {
             || self.mic_gate != other.mic_gate
             || (self.mic_gate_threshold - other.mic_gate_threshold).abs() > f32::EPSILON
             || self.mic_denoise != other.mic_denoise
+    }
+
+    /// Marks an app as not a game, so games-only mode ignores it.
+    pub fn add_not_game(&mut self, exe: &str) {
+        let key = exe.trim().to_lowercase();
+        let key = key.trim_end_matches(".exe");
+        self.game_apps.retain(|g| g.trim().to_lowercase().trim_end_matches(".exe") != key);
+        if !crate::games::listed(&self.not_games, key) {
+            self.not_games.push(exe.trim().to_string());
+        }
     }
 
     pub fn load(path: &Path) -> Self {
