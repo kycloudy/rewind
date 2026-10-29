@@ -5,6 +5,7 @@ Rewind is a small gameplay clipping app for Windows. It keeps the last 30 second
 ## Features
 
 - **Instant replay.** F8 saves the last 15 s to 5 min. The clip includes the moment you pressed the key.
+- **Games only.** By default, Rewind records only while a full-screen or borderless game is in front. It keeps recording for 60 s after you leave the game. Turn this off in Settings to record all the time.
 - **Session recording.** F9 starts and stops a full recording. It uses the same capture, so it adds no extra GPU load.
 - **GPU capture.** Rewind captures with Desktop Duplication and encodes on your GPU (NVIDIA NVENC, AMD AMF, or Intel Quick Sync). If no GPU encoder works, it uses the CPU (x264).
 - **Game and microphone audio.** Rewind records system sound and, if you turn it on, your microphone. A noise gate can mute the microphone while you do not speak.
@@ -49,6 +50,7 @@ WASAPI loopback + mic ──► Rust mixer (48 kHz) ──► FFmpeg stdin ─�
 - One FFmpeg process writes 2-second segments into a ring buffer in `%LOCALAPPDATA%\app.rewind.clips\buffer`. The ring holds a little more than one clip.
 - **Save clip** waits for the current segment to close. Then it joins the newest segments into an MP4 without re-encoding. Saving is almost instant and costs no quality.
 - **Record** copies each finished segment aside and joins them when you stop.
+- Scaling to 1440p, 1080p, or 720p happens on the GPU (`scale_d3d11`), so frames stay off the CPU at every resolution.
 - If the first capture method fails, Rewind tries the next one: GPU zero-copy, then GPU with a frame copy, then CPU.
 - Export and trim re-encode, so cuts are exact to the frame.
 

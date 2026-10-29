@@ -63,7 +63,15 @@ export function Sidebar(p: Props) {
         <div className="deck-head">
           <span className="deck-dot" />
           <span className="deck-state">
-            {st?.recording ? "Recording" : buffering ? "Replay on" : st?.error ? "Capture stopped" : "Replay off"}
+            {st?.recording
+              ? "Recording"
+              : buffering
+                ? "Replay on"
+                : st?.waitingForGame
+                  ? "Waiting for a game"
+                  : st?.error
+                    ? "Capture stopped"
+                    : "Replay off"}
           </span>
           {st?.recording && st.recordingSince && (
             <span className="deck-timer">{duration((now - st.recordingSince) / 1000)}</span>
@@ -81,7 +89,7 @@ export function Sidebar(p: Props) {
         </button>
         <button
           className={`btn deck-record${st?.recording ? " is-on" : ""}`}
-          disabled={!buffering && !st?.recording}
+          disabled={!buffering && !st?.recording && !st?.waitingForGame}
           onClick={p.onRecord}
         >
           <span className="rec-glyph" />
