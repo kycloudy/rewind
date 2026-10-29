@@ -178,6 +178,14 @@ export const mock = {
         clips.push(c);
         return c;
       }
+      case "check_update":
+        return { current: "0.1.0", available: "0.2.0" };
+      case "install_update":
+        for (let p = 0; p <= 1; p += 0.1) {
+          emit("update-progress", p);
+          await wait(200);
+        }
+        throw "Updates install only in the desktop app";
       default:
         return null;
     }

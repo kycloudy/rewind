@@ -5,6 +5,7 @@ mod library;
 mod recorder;
 mod ring;
 mod settings;
+mod update;
 mod win;
 
 use library::{Clip, Library};
@@ -395,6 +396,7 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             Some(vec!["--minimized"]),
@@ -470,6 +472,8 @@ pub fn run() {
             copy_clip,
             filmstrip,
             export_clip,
+            update::check_update,
+            update::install_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Rewind")
