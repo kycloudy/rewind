@@ -13,7 +13,11 @@ export type Clip = {
   size: number;
   favorite: boolean;
   kind: "clip" | "recording" | "export";
+  /** Seconds. The part to play and share. The file keeps every frame. */
+  trim: Trim | null;
 };
+
+export type Trim = { start: number; end: number };
 
 export type Game = { name: string; exe: string; guessed: boolean };
 
@@ -95,6 +99,7 @@ export const api = {
   reveal: (id: string) => call<void>("reveal_clip", { id }),
   openFolder: () => call<void>("open_clips_folder"),
   copy: (id: string) => call<void>("copy_clip", { id }),
+  setTrim: (id: string, trim: Trim | null) => call<Clip>("set_trim", { id, trim }),
   filmstrip: (id: string) => call<string>("filmstrip", { id }),
   exportClip: (id: string, start: number, end: number, targetMb: number | null) =>
     call<Clip>("export_clip", { req: { id, start, end, targetMb } }),

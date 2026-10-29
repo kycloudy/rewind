@@ -18,6 +18,16 @@ pub struct Clip {
     pub favorite: bool,
     /// "clip" | "recording" | "export"
     pub kind: String,
+    /// The part of the file to play and share. The file itself keeps every frame.
+    #[serde(default)]
+    pub trim: Option<Trim>,
+}
+
+/// Seconds from the start of the file.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Trim {
+    pub start: f64,
+    pub end: f64,
 }
 
 pub struct Library {

@@ -45,6 +45,7 @@ let clips: Clip[] = [
   size: Math.round((duration as number) * 3.1e6),
   favorite: favorite as boolean,
   kind: (duration as number) > 300 ? "recording" : "clip",
+  trim: i === 0 ? { start: 12, end: 24.5 } : null,
 }));
 
 let settings: Settings = {
@@ -142,6 +143,7 @@ export const mock = {
           size: settings.clipSeconds * 3.1e6,
           favorite: false,
           kind: "clip",
+          trim: null,
         };
         clips.push(c);
         emit("status", (status = { ...status, saving: false }));
@@ -160,6 +162,20 @@ export const mock = {
         if (cmd === "rename_clip") c.title = a.title;
         else c.favorite = a.favorite;
         return { ...c };
+      }
+      case "set_trim": {
+        const c = clips.find((x) => x.id === a.id)!;
+        c.trim = a.trim;
+        return { ...c };
+      }
+      case "copy_clip": {
+        const c = clips.find((x) => x.id === a.id)!;
+        if (c.trim)
+          for (let p = 0; p <= 1; p += 0.2) {
+            emit("export-progress", { id: a.id, progress: p });
+            await wait(120);
+          }
+        return;
       }
       case "delete_clip":
         clips = clips.filter((x) => x.id !== a.id);
@@ -182,6 +198,7 @@ export const mock = {
           duration: a.req.end - a.req.start,
           kind: "export",
           favorite: false,
+          trim: null,
         };
         clips.push(c);
         return c;

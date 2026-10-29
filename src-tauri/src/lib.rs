@@ -8,7 +8,7 @@ mod ring;
 mod settings;
 mod win;
 
-use library::{Clip, Library};
+use library::{Clip, Library, Trim};
 use parking_lot::Mutex;
 use recorder::{Recorder, Status};
 use serde::Serialize;
@@ -27,6 +27,8 @@ struct AppState {
     settings_file: PathBuf,
     library: Arc<Library>,
     recorder: Arc<Recorder>,
+    /// Short-lived trimmed copies made for the clipboard.
+    shares_dir: PathBuf,
     record_item: Mutex<Option<MenuItem<tauri::Wry>>>,
     not_game_item: Mutex<Option<MenuItem<tauri::Wry>>>,
 }
@@ -126,7 +128,24 @@ fn delete_clip(state: S, id: String) -> Result<(), String> {
         let _ = std::fs::remove_file(t);
     }
     let _ = std::fs::remove_file(state.recorder.thumbs_dir().join(format!("{id}-strip.jpg")));
+    remove_shares(&state.shares_dir, &id);
     Ok(())
+}
+
+/// Saves the trim range. The file is not changed. A range that covers the whole clip clears the trim.
+#[tauri::command]
+fn set_trim(state: S, id: String, trim: Option<Trim>) -> Result<Clip, String> {
+    state
+        .library
+        .update(&id, |c| {
+            c.trim = trim
+                .map(|t| {
+                    let start = t.start.clamp(0.0, c.duration);
+                    Trim { start, end: t.end.clamp(start, c.duration) }
+                })
+                .filter(|t| t.end - t.start >= 0.5 && (t.start > 0.05 || t.end < c.duration - 0.05));
+        })
+        .ok_or("Clip not found".into())
 }
 
 #[tauri::command]
@@ -146,10 +165,61 @@ fn open_clips_folder(state: S) {
     let _ = std::process::Command::new("xdg-open").arg(&dir).spawn();
 }
 
+/// Puts the clip on the clipboard. A trimmed clip gets a small file of just the trimmed part.
 #[tauri::command]
-fn copy_clip(state: S, id: String) -> Result<(), String> {
+async fn copy_clip(app: AppHandle, state: S<'_>, id: String) -> Result<(), String> {
     let clip = state.library.get(&id).ok_or("Clip not found")?;
-    win::copy_file_to_clipboard(&clip.path)
+    let Some(trim) = clip.trim else {
+        return win::copy_file_to_clipboard(&clip.path);
+    };
+    let shares = state.shares_dir.clone();
+    let settings = state.settings.lock().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = shares.join(format!("{}-{}-{}", clip.id, (trim.start * 1000.0) as u64, (trim.end * 1000.0) as u64));
+        let name = clip.path.file_name().map(PathBuf::from).unwrap_or_else(|| "Clip.mp4".into());
+        let out = dir.join(name).with_extension("mp4");
+        if !out.exists() {
+            remove_shares(&shares, &clip.id);
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            // A cut that starts on a keyframe needs no re-encode. Keyframes come every 2 s.
+            let key = ffmpeg::keyframe_before(&clip.path, trim.start).filter(|k| trim.start - k <= 0.25);
+            let res = match key {
+                Some(k) => ffmpeg::cut(&clip.path, &out, k, trim.end),
+                None => {
+                    let job = ffmpeg::ExportJob {
+                        input: &clip.path,
+                        output: &out,
+                        start: trim.start,
+                        end: trim.end,
+                        encoder: ffmpeg::resolve_encoder(&settings.encoder, "h264"),
+                        video_kbps: settings.video_kbps(),
+                        audio_kbps: 160,
+                        height: None,
+                        fps: settings.fps,
+                    };
+                    ffmpeg::export(&job, |p| {
+                        let _ = app.emit("export-progress", ExportProgress { id: clip.id.clone(), progress: p });
+                    })
+                }
+            };
+            if let Err(e) = res {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(e);
+            }
+        }
+        win::copy_file_to_clipboard(&out)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+fn remove_shares(shares: &std::path::Path, id: &str) {
+    let prefix = format!("{id}-");
+    for e in std::fs::read_dir(shares).into_iter().flatten().flatten() {
+        if e.file_name().to_string_lossy().starts_with(&prefix) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
 }
 
 /// Builds (once) a strip of frames for the trim timeline.
@@ -252,6 +322,7 @@ async fn export_clip(app: AppHandle, state: S<'_>, req: ExportRequest) -> Result
             duration,
             favorite: false,
             kind: "export".into(),
+            trim: None,
         };
         library.add(clip.clone());
         Ok(clip)
@@ -446,6 +517,9 @@ pub fn run() {
             let _ = std::fs::create_dir_all(&settings.clips_dir);
 
             let library = Arc::new(Library::open(data_dir.join("library.json")));
+            // Trimmed copies from the last run are not needed any more.
+            let shares_dir = data_dir.join("shares");
+            let _ = std::fs::remove_dir_all(&shares_dir);
             let recorder = Recorder::new(&data_dir, library.clone(), settings.clone());
             {
                 let handle = handle.clone();
@@ -480,6 +554,7 @@ pub fn run() {
                 settings_file,
                 library,
                 recorder: recorder.clone(),
+                shares_dir,
                 record_item: Mutex::new(None),
                 not_game_item: Mutex::new(None),
             });
@@ -515,6 +590,7 @@ pub fn run() {
             reveal_clip,
             open_clips_folder,
             copy_clip,
+            set_trim,
             filmstrip,
             export_clip,
             not_a_game,

@@ -463,6 +463,7 @@ impl Recorder {
             duration,
             favorite: false,
             kind: kind.into(),
+            trim: None,
         };
         self.library.add(clip.clone());
         Ok(clip)
