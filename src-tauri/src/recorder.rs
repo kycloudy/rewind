@@ -51,6 +51,19 @@ pub struct Game {
     pub guessed: bool,
 }
 
+/// The last app in front, other than Rewind, and what Rewind made of it.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Seen {
+    /// Exe file name without ".exe". Empty when Windows did not give it.
+    pub app: String,
+    /// Index of the display the app is on. `None` when Rewind could not match it.
+    pub display: Option<u32>,
+    pub full_screen: bool,
+    pub is_game: bool,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -58,6 +71,7 @@ pub struct Status {
     /// Games-only mode is on and no game is in front, so capture is paused.
     pub waiting_for_game: bool,
     pub game: Option<Game>,
+    pub seen: Option<Seen>,
     pub recording: bool,
     /// Unix ms when the current recording started.
     pub recording_since: Option<i64>,
@@ -80,6 +94,8 @@ struct Run {
     child: Child,
     audio: Option<AudioPump>,
     started: Instant,
+    /// The display this run captures.
+    monitor: u32,
     ring: Arc<Ring>,
     /// Last line FFmpeg wrote to stderr.
     log: Arc<Mutex<String>>,
@@ -111,6 +127,8 @@ struct Inner {
     game_seen: Option<Instant>,
     /// The app that looks like a game now, and since when.
     candidate: Option<(String, Instant)>,
+    /// The display the current game is on. Capture follows it.
+    game_monitor: Option<u32>,
     restarts: u32,
 }
 
@@ -119,6 +137,11 @@ impl Inner {
         !self.settings.games_only
             || self.session.is_some()
             || self.game_seen.is_some_and(|t| t.elapsed() < GAME_LINGER)
+    }
+
+    /// The game's display, else the display set in Settings.
+    fn capture_monitor(&self) -> u32 {
+        self.game_monitor.unwrap_or(self.settings.monitor)
     }
 }
 
@@ -154,6 +177,7 @@ impl Recorder {
                 last_game: None,
                 game_seen: None,
                 candidate: None,
+                game_monitor: None,
                 restarts: 0,
             }),
             installed: Mutex::new(Arc::new(Vec::new())),
@@ -269,13 +293,14 @@ impl Recorder {
         };
         let id = inner.next_run_id;
         inner.next_run_id += 1;
-        match spawn(&inner.settings, encoder, pipeline) {
+        let monitor = inner.capture_monitor();
+        match spawn(&inner.settings, monitor, encoder, pipeline) {
             Ok((child, audio, ring, log)) => {
-                log::info!("capture started: {encoder} {pipeline:?}");
+                log::info!("capture started: display {monitor}, {encoder} {pipeline:?}");
                 inner.status.buffering = true;
                 inner.status.encoder = Some(label(encoder).into());
                 inner.status.error = None;
-                inner.run = Some(Run { id, child, audio, started: Instant::now(), ring, log, strategies, strategy });
+                inner.run = Some(Run { id, child, audio, started: Instant::now(), monitor, ring, log, strategies, strategy });
             }
             Err(e) => inner.status.error = Some(e),
         }
@@ -291,12 +316,25 @@ impl Recorder {
             .ok()
             .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
             .unwrap_or_default();
-        let (user, blocked) = (&inner.settings.game_apps, &inner.settings.not_games);
-        let in_front = win::foreground().filter(|fg| !fg.exe.eq_ignore_ascii_case(&me)).and_then(|fg| {
-            let on_screen = fg.monitor == Some(inner.settings.monitor);
-            on_screen.then(|| games::detect(&fg, &installed, user, blocked)).flatten().map(|g| (fg, g))
+        let front = win::foreground().filter(|fg| !fg.exe.eq_ignore_ascii_case(&me));
+        // Rewind itself is in front while the player reads this, so keep the app seen before it.
+        let in_front = front.and_then(|fg| {
+            let (verdict, why) = games::judge(&fg, &installed, &inner.settings.game_apps, &inner.settings.not_games);
+            let seen = Seen {
+                app: fg.exe.clone(),
+                display: fg.monitor,
+                full_screen: fg.full_screen,
+                is_game: verdict.is_some(),
+                reason: why.into(),
+            };
+            if inner.status.seen.as_ref() != Some(&seen) {
+                inner.status.seen = Some(seen);
+                changed = true;
+            }
+            verdict.map(|g| (fg, g))
         });
         // A game that runs behind other windows still counts.
+        let (user, blocked) = (&inner.settings.game_apps, &inner.settings.not_games);
         let found = in_front.or_else(|| games::running(&self.processes.lock(), &installed, user, blocked));
         match found {
             Some((fg, game)) => {
@@ -315,6 +353,7 @@ impl Recorder {
                     }
                     inner.last_game = Some(game.name);
                     inner.game_seen = Some(Instant::now());
+                    inner.game_monitor = fg.monitor.or(inner.game_monitor);
                 }
             }
             None => inner.candidate = None,
@@ -322,6 +361,16 @@ impl Recorder {
 
         if inner.status.game.is_some() && !inner.game_seen.is_some_and(|t| t.elapsed() < GAME_LINGER) {
             inner.status.game = None;
+            inner.game_monitor = None;
+            changed = true;
+        }
+
+        // Move capture to the game's display. Wait while recording, because the parts of one recording must share a size.
+        let moved = inner.run.as_ref().is_some_and(|r| r.monitor != inner.capture_monitor());
+        if moved && inner.session.is_none() && inner.capture_wanted() {
+            log::info!("moving capture to display {}", inner.capture_monitor());
+            inner.restarts = 0;
+            self.restart_locked(&mut inner, 0);
             changed = true;
         }
 
@@ -377,6 +426,7 @@ impl Recorder {
         inner.game_seen = None;
         inner.candidate = None;
         inner.last_game = None;
+        inner.game_monitor = None;
         let st = inner.status.clone();
         drop(inner);
         self.emit(st);
@@ -599,7 +649,7 @@ fn plan(s: &Settings) -> Vec<(&'static str, Pipeline)> {
 
 type Spawned = (Child, Option<AudioPump>, Arc<Ring>, Arc<Mutex<String>>);
 
-fn spawn(s: &Settings, encoder: &'static str, pipeline: Pipeline) -> Result<Spawned, String> {
+fn spawn(s: &Settings, monitor: u32, encoder: &'static str, pipeline: Pipeline) -> Result<Spawned, String> {
     let audio = s.any_audio();
 
     let mut cmd = if audio { ffmpeg::command_with_stdin() } else { ffmpeg::command() };
@@ -608,7 +658,7 @@ fn spawn(s: &Settings, encoder: &'static str, pipeline: Pipeline) -> Result<Spaw
         "-f",
         "lavfi",
         "-i",
-        &format!("ddagrab=output_idx={}:framerate={}:draw_mouse=1", s.monitor, s.fps),
+        &format!("ddagrab=output_idx={monitor}:framerate={}:draw_mouse=1", s.fps),
     ]);
     if audio {
         cmd.args(["-thread_queue_size", "1024", "-f", "f32le", "-ar", "48000", "-ac", "2", "-i", "pipe:0"]);
@@ -642,7 +692,7 @@ fn spawn(s: &Settings, encoder: &'static str, pipeline: Pipeline) -> Result<Spaw
     if audio {
         cmd.args(["-map", "1:a", "-c:a", "aac", "-b:a", "160k", "-af", "aresample=async=1000"]);
     }
-    let native_height = win::monitors().get(s.monitor as usize).map(|m| m.height.max(0) as u32);
+    let native_height = win::monitors().get(monitor as usize).map(|m| m.height.max(0) as u32);
     cmd.args(ffmpeg::encoder_args(encoder, s.video_kbps_at(native_height), s.fps, true));
     cmd.args(["-force_key_frames", "expr:gte(t,n_forced*2)"]);
     cmd.args(["-f", "mpegts", "pipe:1"]);

@@ -20,7 +20,7 @@ pub struct Foreground {
     /// Exe file name without ".exe", e.g. "cs2".
     pub exe: String,
     pub title: String,
-    /// Full path of the exe.
+    /// Full path of the exe. Empty when Windows will not give it (for example anti-cheat games).
     pub path: String,
     /// Index of the window's monitor, in the order `monitors` lists them.
     pub monitor: Option<u32>,
@@ -173,6 +173,10 @@ mod imp {
                 }
                 CloseHandle(proc);
             }
+            // Anti-cheat can block OpenProcess. A process snapshot still gives the exe name.
+            if exe.is_empty() {
+                exe = exe_name_from_snapshot(pid).unwrap_or_default();
+            }
 
             let mut info: MONITORINFO = std::mem::zeroed();
             info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
@@ -218,6 +222,30 @@ mod imp {
             CloseHandle(snap);
         }
         paths
+    }
+
+    /// The exe name (no ".exe") of process `pid`, read from a process snapshot.
+    /// This works when the process cannot be opened. The path is not available.
+    unsafe fn exe_name_from_snapshot(pid: u32) -> Option<String> {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap.is_null() || snap as isize == -1 {
+            return None;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut name = None;
+        let mut ok = Process32FirstW(snap, &mut entry) != 0;
+        while ok {
+            if entry.th32ProcessID == pid {
+                let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                let file = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                name = Path::new(&file).file_stem().map(|s| s.to_string_lossy().into_owned());
+                break;
+            }
+            ok = Process32NextW(snap, &mut entry) != 0;
+        }
+        CloseHandle(snap);
+        name
     }
 
     /// The desktop fills the screen too.
