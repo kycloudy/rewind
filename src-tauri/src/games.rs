@@ -103,32 +103,62 @@ pub struct Detected {
 
 /// Decides whether `fg` is a game. The user's lists decide first.
 pub fn detect(fg: &Foreground, installed: &[Installed], user_games: &[String], not_games: &[String]) -> Option<Detected> {
+    judge(fg, installed, user_games, not_games).0
+}
+
+/// Like `detect`, and says why. The reason is shown in Settings.
+pub fn judge(
+    fg: &Foreground,
+    installed: &[Installed],
+    user_games: &[String],
+    not_games: &[String],
+) -> (Option<Detected>, &'static str) {
     let exe = fg.exe.to_lowercase();
     let exe = exe.trim_end_matches(".exe");
-    if exe.is_empty() || listed(not_games, exe) {
-        return None;
+    if exe.is_empty() {
+        return (None, "Windows did not give the app's exe path");
+    }
+    if listed(not_games, exe) {
+        return (None, "On your Not games list");
     }
     let path = fg.path.to_lowercase().replace('/', "\\");
     let store = installed.iter().filter(|g| path.starts_with(&g.dir)).max_by_key(|g| g.dir.len());
-    let found = |guessed| {
+    let found = |guessed, why| {
         let name = store.map_or_else(|| game_name(&fg.exe, &fg.title), |g| g.name.clone());
-        Some(Detected { name, guessed })
+        (Some(Detected { name, guessed }), why)
     };
     if listed(user_games, exe) {
-        return found(false);
+        return found(false, "On your Other games list");
     }
     if NOT_GAMES.contains(&exe) {
-        return None;
+        return (None, "Known app that is not a game");
     }
     // Minecraft Java Edition runs as javaw, like every other Java app.
     let minecraft = matches!(exe, "java" | "javaw") && fg.title.starts_with("Minecraft");
-    if store.is_some() || minecraft || KNOWN_GAMES.contains(&exe) || GAME_DIRS.iter().any(|d| path.contains(d)) {
-        return found(false);
+    if store.is_some() {
+        return found(false, "Installed by a game launcher");
+    }
+    if minecraft || KNOWN_GAMES.contains(&exe) {
+        return found(false, "Known game");
+    }
+    if GAME_DIRS.iter().any(|d| path.contains(d)) {
+        return found(false, "Runs from a game folder");
     }
     if fg.full_screen {
-        return found(true);
+        return found(true, "Full screen, but not a known game");
     }
-    None
+    (None, "Not full screen and not a known game")
+}
+
+/// Finds a game among the running processes, for a game that is not in front.
+/// Only an installed game or a listed app counts. The full-screen test cannot run here.
+pub fn running(paths: &[String], installed: &[Installed], user_games: &[String], not_games: &[String]) -> Option<(Foreground, Detected)> {
+    paths.iter().find_map(|path| {
+        let exe = Path::new(path).file_stem()?.to_string_lossy().into_owned();
+        let fg = Foreground { exe, path: path.clone(), ..Default::default() };
+        let game = detect(&fg, installed, user_games, not_games)?;
+        Some((fg, game))
+    })
 }
 
 /// True when `exe` (lower case, no ".exe") is on a user list of app names.
@@ -411,6 +441,13 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_path() {
+        // Anti-cheat games: only the exe name is known, so the full-screen test decides.
+        assert!(is_game(&app("SomeShooter-Win64-Shipping", "", true), &[]));
+        assert!(!is_game(&app("SomeShooter-Win64-Shipping", "", false), &[]));
+    }
+
+    #[test]
     fn windowed_games() {
         assert!(is_game(&app("cs2", "", false), &[]));
         let steam = r"C:\Program Files (x86)\Steam\steamapps\common\Hades\Hades.exe";
@@ -466,6 +503,19 @@ mod tests {
         // A folder that only starts with the same letters is a different folder.
         let other = app("x", r"D:\Games\Fortnite Tools\x.exe", false);
         assert!(detect(&other, &installed, &[], &[]).is_none());
+    }
+
+    #[test]
+    fn running_games_need_no_window() {
+        let installed = [Installed::new("Fortnite", r"D:\Games\Fortnite").unwrap()];
+        let paths = [
+            r"C:\Windows\explorer.exe".to_string(),
+            r"D:\Games\Fortnite\FortniteGame\Binaries\Win64\x.exe".to_string(),
+        ];
+        let (fg, game) = running(&paths, &installed, &[], &[]).unwrap();
+        assert_eq!((fg.exe.as_str(), game.name.as_str()), ("x", "Fortnite"));
+        assert!(running(&paths, &[], &[], &[]).is_none());
+        assert!(running(&paths, &installed, &[], &["x".into()]).is_none());
     }
 
     #[test]

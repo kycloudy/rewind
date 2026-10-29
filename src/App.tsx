@@ -131,6 +131,7 @@ export function App() {
         {view.kind === "settings" && settings ? (
           <SettingsView
             settings={settings}
+            seen={status?.seen ?? null}
             onSaved={(s) => {
               setSettings(s);
               toast({ text: "Settings saved" });

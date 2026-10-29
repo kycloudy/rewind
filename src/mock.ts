@@ -78,6 +78,7 @@ let status: Status = {
   buffering: true,
   waitingForGame: false,
   game: { name: "VALORANT", exe: "VALORANT-Win64-Shipping", guessed: false },
+  seen: { app: "VALORANT-Win64-Shipping", display: 0, fullScreen: true, isGame: true, reason: "Known game" },
   recording: false,
   recordingSince: null,
   encoder: "NVIDIA NVENC",

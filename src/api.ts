@@ -21,10 +21,19 @@ export type Trim = { start: number; end: number };
 
 export type Game = { name: string; exe: string; guessed: boolean };
 
+export type Seen = {
+  app: string;
+  display: number | null;
+  fullScreen: boolean;
+  isGame: boolean;
+  reason: string;
+};
+
 export type Status = {
   buffering: boolean;
   waitingForGame: boolean;
   game: Game | null;
+  seen: Seen | null;
   recording: boolean;
   recordingSince: number | null;
   encoder: string | null;

@@ -1,11 +1,12 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { fetchReleases, type Release } from "../releases";
-import { api, appVersion, openUrl, pickFolder, type Devices, type RunningApp, type Settings, type UpdateInfo } from "../api";
+import { api, appVersion, openUrl, pickFolder, type Devices, type RunningApp, type Seen, type Settings, type UpdateInfo } from "../api";
 import { keyLabel } from "../format";
 import { Markdown } from "./Markdown";
 
 type Props = {
   settings: Settings;
+  seen: Seen | null;
   onSaved: (s: Settings) => void;
   onError: (text: string) => void;
   update: UpdateInfo | null;
@@ -19,7 +20,7 @@ const REPO_URL = "https://github.com/kycloudy/rewind";
 const CODEC_LABELS: Record<Settings["codec"], string> = { h264: "H.264", hevc: "HEVC", av1: "AV1" };
 const CODEC_ORDER: Settings["codec"][] = ["h264", "hevc", "av1"];
 
-export function SettingsView({ settings, onSaved, onError, update, updating, onCheckUpdate, onInstallUpdate }: Props) {
+export function SettingsView({ settings, seen, onSaved, onError, update, updating, onCheckUpdate, onInstallUpdate }: Props) {
   const [draft, setDraft] = useState(settings);
   const [devices, setDevices] = useState<Devices | null>(null);
   const [apps, setApps] = useState<RunningApp[]>([]);
@@ -69,6 +70,15 @@ export function SettingsView({ settings, onSaved, onError, update, updating, onC
           </Row>
           <Row label="Only in games">
             <Switch checked={draft.gamesOnly} onChange={(v) => set("gamesOnly", v)} label="Only in games" />
+          </Row>
+          <Row label="Rewind sees">
+            <span className="muted">
+              {seen
+                ? `${seen.app || "Unknown app"} · ${seen.display === null ? "display unknown" : `display ${seen.display + 1}`} · ${
+                    seen.fullScreen ? "full screen" : "not full screen"
+                  } · ${seen.isGame ? "game" : "not a game"}. ${seen.reason}.`
+                : "Nothing yet. Open an app, then come back."}
+            </span>
           </Row>
           {draft.gamesOnly && (
             <Row label="Other games">

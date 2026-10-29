@@ -20,7 +20,7 @@ pub struct Foreground {
     /// Exe file name without ".exe", e.g. "cs2".
     pub exe: String,
     pub title: String,
-    /// Full path of the exe.
+    /// Full path of the exe. Empty when Windows will not give it (for example anti-cheat games).
     pub path: String,
     /// Index of the window's monitor, in the order `monitors` lists them.
     pub monitor: Option<u32>,
@@ -67,6 +67,11 @@ pub fn reg_subkeys(hive: Hive, key: &str) -> Vec<String> {
 /// Root folders of the local fixed drives, e.g. `C:\`.
 pub fn fixed_drives() -> Vec<String> {
     imp::fixed_drives()
+}
+
+/// Full exe paths of the running processes the user may read. Opens every process, so call it every few seconds at most.
+pub fn processes() -> Vec<String> {
+    imp::processes()
 }
 
 pub fn monitors() -> Vec<Monitor> {
@@ -138,6 +143,9 @@ mod imp {
         RRF_RT_REG_SZ,
     };
     use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+    };
     use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
     use windows_sys::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -178,6 +186,10 @@ mod imp {
                         .unwrap_or_default();
                 }
                 CloseHandle(proc);
+            }
+            // Anti-cheat can block OpenProcess. A process snapshot still gives the exe name.
+            if exe.is_empty() {
+                exe = exe_name_from_snapshot(pid).unwrap_or_default();
             }
 
             let mut info: MONITORINFO = std::mem::zeroed();
@@ -235,6 +247,57 @@ mod imp {
             EnumWindows(Some(window_cb), &mut apps as *mut _ as LPARAM);
         }
         apps
+    }
+
+    pub fn processes() -> Vec<String> {
+        let mut paths = Vec::new();
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap.is_null() || snap == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                return paths;
+            }
+            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut ok = Process32FirstW(snap, &mut entry) != 0;
+            while ok {
+                let proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID);
+                if !proc.is_null() {
+                    let mut buf = [0u16; 520];
+                    let mut len = buf.len() as u32;
+                    if QueryFullProcessImageNameW(proc, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0 {
+                        paths.push(String::from_utf16_lossy(&buf[..len as usize]));
+                    }
+                    CloseHandle(proc);
+                }
+                ok = Process32NextW(snap, &mut entry) != 0;
+            }
+            CloseHandle(snap);
+        }
+        paths
+    }
+
+    /// The exe name (no ".exe") of process `pid`, read from a process snapshot.
+    /// This works when the process cannot be opened. The path is not available.
+    unsafe fn exe_name_from_snapshot(pid: u32) -> Option<String> {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snap.is_null() || snap as isize == -1 {
+            return None;
+        }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut name = None;
+        let mut ok = Process32FirstW(snap, &mut entry) != 0;
+        while ok {
+            if entry.th32ProcessID == pid {
+                let len = entry.szExeFile.iter().position(|&c| c == 0).unwrap_or(entry.szExeFile.len());
+                let file = String::from_utf16_lossy(&entry.szExeFile[..len]);
+                name = Path::new(&file).file_stem().map(|s| s.to_string_lossy().into_owned());
+                break;
+            }
+            ok = Process32NextW(snap, &mut entry) != 0;
+        }
+        CloseHandle(snap);
+        name
     }
 
     /// The desktop fills the screen too.
@@ -431,6 +494,9 @@ mod imp {
         Vec::new()
     }
     pub fn fixed_drives() -> Vec<String> {
+        Vec::new()
+    }
+    pub fn processes() -> Vec<String> {
         Vec::new()
     }
     pub fn monitors() -> Vec<Monitor> {
