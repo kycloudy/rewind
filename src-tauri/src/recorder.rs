@@ -38,12 +38,24 @@ const GAME_DWELL: Duration = Duration::from_secs(3);
 /// How often to look for newly installed games.
 const GAME_SCAN_EVERY: Duration = Duration::from_secs(60);
 
+/// The game that keeps capture on.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Game {
+    pub name: String,
+    /// Exe file name without ".exe".
+    pub exe: String,
+    /// True when only the full-screen test matched, so the app may not be a game.
+    pub guessed: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub buffering: bool,
     /// Games-only mode is on and no game is in front, so capture is paused.
     pub waiting_for_game: bool,
+    pub game: Option<Game>,
     pub recording: bool,
     /// Unix ms when the current recording started.
     pub recording_since: Option<i64>,
@@ -264,7 +276,7 @@ impl Recorder {
                 .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
                 .unwrap_or_default();
             let game = (!fg.exe.eq_ignore_ascii_case(&me) && fg.monitor == Some(inner.settings.monitor))
-                .then(|| games::detect(&fg, &installed, &inner.settings.game_apps))
+                .then(|| games::detect(&fg, &installed, &inner.settings.game_apps, &inner.settings.not_games))
                 .flatten();
             if let Some(game) = game {
                 // A new match must hold for a moment, so a short full-screen video or overlay does not start capture.
@@ -275,12 +287,22 @@ impl Recorder {
                 inner.candidate = Some((fg.exe.clone(), since));
                 let capturing = inner.game_seen.is_some_and(|t| t.elapsed() < GAME_LINGER);
                 if capturing || since.elapsed() >= GAME_DWELL {
+                    let now = Game { name: game.name.clone(), exe: fg.exe.clone(), guessed: game.guessed };
+                    if inner.status.game.as_ref() != Some(&now) {
+                        inner.status.game = Some(now);
+                        changed = true;
+                    }
                     inner.last_game = Some(game.name);
                     inner.game_seen = Some(Instant::now());
                 }
             } else {
                 inner.candidate = None;
             }
+        }
+
+        if inner.status.game.is_some() && !inner.game_seen.is_some_and(|t| t.elapsed() < GAME_LINGER) {
+            inner.status.game = None;
+            changed = true;
         }
 
         // Games-only mode: start when a game comes to the front, pause when none has been there for a while.
@@ -323,6 +345,21 @@ impl Recorder {
         if changed {
             self.emit(st);
         }
+    }
+
+    /// Stops treating `exe` as the current game, so games-only mode pauses at once.
+    pub fn forget_game(&self, exe: &str) {
+        let mut inner = self.inner.lock();
+        if !inner.status.game.as_ref().is_some_and(|g| g.exe.eq_ignore_ascii_case(exe)) || inner.session.is_some() {
+            return;
+        }
+        inner.status.game = None;
+        inner.game_seen = None;
+        inner.candidate = None;
+        inner.last_game = None;
+        let st = inner.status.clone();
+        drop(inner);
+        self.emit(st);
     }
 
     fn current_game(&self) -> String {

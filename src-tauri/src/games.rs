@@ -101,11 +101,11 @@ pub struct Detected {
     pub guessed: bool,
 }
 
-/// Decides whether `fg` is a game. An app on the user's list always counts.
-pub fn detect(fg: &Foreground, installed: &[Installed], user_games: &[String]) -> Option<Detected> {
+/// Decides whether `fg` is a game. The user's lists decide first.
+pub fn detect(fg: &Foreground, installed: &[Installed], user_games: &[String], not_games: &[String]) -> Option<Detected> {
     let exe = fg.exe.to_lowercase();
     let exe = exe.trim_end_matches(".exe");
-    if exe.is_empty() {
+    if exe.is_empty() || listed(not_games, exe) {
         return None;
     }
     let path = fg.path.to_lowercase().replace('/', "\\");
@@ -344,7 +344,7 @@ mod tests {
     }
 
     fn is_game(fg: &Foreground, user: &[String]) -> bool {
-        detect(fg, &[], user).is_some()
+        detect(fg, &[], user, &[]).is_some()
     }
 
     #[test]
@@ -373,12 +373,13 @@ mod tests {
         }
         // The user's list wins.
         assert!(is_game(&app("vlc", "", false), &["vlc".into()]));
+        assert!(detect(&app("cs2", "", true), &[], &[], &["CS2.exe".into()]).is_none());
     }
 
     #[test]
     fn only_full_screen_is_a_guess() {
-        assert_eq!(detect(&app("unknown", "", true), &[], &[]).map(|d| d.guessed), Some(true));
-        assert_eq!(detect(&app("cs2", "", true), &[], &[]).map(|d| d.guessed), Some(false));
+        assert_eq!(detect(&app("unknown", "", true), &[], &[], &[]).map(|d| d.guessed), Some(true));
+        assert_eq!(detect(&app("cs2", "", true), &[], &[], &[]).map(|d| d.guessed), Some(false));
     }
 
     #[test]
@@ -404,12 +405,12 @@ mod tests {
             Installed::new("Hades II", "E:/SteamLibrary/steamapps/common/Hades II/").unwrap(),
         ];
         let fort = app("FortniteClient-Win64-Shipping", r"D:\Games\Fortnite\FortniteGame\Binaries\Win64\x.exe", false);
-        assert_eq!(detect(&fort, &installed, &[]).map(|d| d.name), Some("Fortnite".into()));
+        assert_eq!(detect(&fort, &installed, &[], &[]).map(|d| d.name), Some("Fortnite".into()));
         let hades = app("Hades2", r"E:\SteamLibrary\steamapps\common\Hades II\Ship\Hades2.exe", false);
-        assert_eq!(detect(&hades, &installed, &[]), Some(Detected { name: "Hades II".into(), guessed: false }));
+        assert_eq!(detect(&hades, &installed, &[], &[]), Some(Detected { name: "Hades II".into(), guessed: false }));
         // A folder that only starts with the same letters is a different folder.
         let other = app("x", r"D:\Games\Fortnite Tools\x.exe", false);
-        assert!(detect(&other, &installed, &[]).is_none());
+        assert!(detect(&other, &installed, &[], &[]).is_none());
     }
 
     #[test]
