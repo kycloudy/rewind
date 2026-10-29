@@ -150,6 +150,17 @@ pub fn judge(
     (None, "Not full screen and not a known game")
 }
 
+/// Finds a game among the running processes, for a game that is not in front.
+/// Only an installed game or a listed app counts. The full-screen test cannot run here.
+pub fn running(paths: &[String], installed: &[Installed], user_games: &[String], not_games: &[String]) -> Option<(Foreground, Detected)> {
+    paths.iter().find_map(|path| {
+        let exe = Path::new(path).file_stem()?.to_string_lossy().into_owned();
+        let fg = Foreground { exe, path: path.clone(), ..Default::default() };
+        let game = detect(&fg, installed, user_games, not_games)?;
+        Some((fg, game))
+    })
+}
+
 /// True when `exe` (lower case, no ".exe") is on a user list of app names.
 pub fn listed(list: &[String], exe: &str) -> bool {
     list.iter().any(|g| g.trim().to_lowercase().trim_end_matches(".exe") == exe)
@@ -437,6 +448,19 @@ mod tests {
         // A folder that only starts with the same letters is a different folder.
         let other = app("x", r"D:\Games\Fortnite Tools\x.exe", false);
         assert!(detect(&other, &installed, &[], &[]).is_none());
+    }
+
+    #[test]
+    fn running_games_need_no_window() {
+        let installed = [Installed::new("Fortnite", r"D:\Games\Fortnite").unwrap()];
+        let paths = [
+            r"C:\Windows\explorer.exe".to_string(),
+            r"D:\Games\Fortnite\FortniteGame\Binaries\Win64\x.exe".to_string(),
+        ];
+        let (fg, game) = running(&paths, &installed, &[], &[]).unwrap();
+        assert_eq!((fg.exe.as_str(), game.name.as_str()), ("x", "Fortnite"));
+        assert!(running(&paths, &[], &[], &[]).is_none());
+        assert!(running(&paths, &installed, &[], &["x".into()]).is_none());
     }
 
     #[test]

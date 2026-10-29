@@ -37,6 +37,8 @@ const GAME_LINGER: Duration = Duration::from_secs(60);
 const GAME_DWELL: Duration = Duration::from_secs(3);
 /// How often to look for newly installed games.
 const GAME_SCAN_EVERY: Duration = Duration::from_secs(60);
+/// How often to list the running processes.
+const PROCESS_SCAN_EVERY: Duration = Duration::from_secs(10);
 
 /// The game that keeps capture on.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -151,6 +153,8 @@ pub struct Recorder {
     inner: Mutex<Inner>,
     /// Games that launchers installed.
     installed: Mutex<Arc<Vec<Installed>>>,
+    /// Exe paths of the running processes.
+    processes: Mutex<Arc<Vec<String>>>,
     saving: AtomicBool,
     listener: Mutex<Option<Listener>>,
 }
@@ -177,6 +181,7 @@ impl Recorder {
                 restarts: 0,
             }),
             installed: Mutex::new(Arc::new(Vec::new())),
+            processes: Mutex::new(Arc::new(Vec::new())),
             saving: AtomicBool::new(false),
             listener: Mutex::new(None),
         });
@@ -204,6 +209,18 @@ impl Recorder {
                     None => break,
                 }
                 std::thread::sleep(GAME_SCAN_EVERY);
+            })
+            .ok();
+        let weak = Arc::downgrade(&rec);
+        std::thread::Builder::new()
+            .name("process-scan".into())
+            .spawn(move || loop {
+                let found = Arc::new(win::processes());
+                match weak.upgrade() {
+                    Some(r) => *r.processes.lock() = found,
+                    None => break,
+                }
+                std::thread::sleep(PROCESS_SCAN_EVERY);
             })
             .ok();
         rec
@@ -295,29 +312,32 @@ impl Recorder {
         let mut inner = self.inner.lock();
         let mut changed = false;
 
-        if let Some(fg) = win::foreground() {
-            let me = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
-                .unwrap_or_default();
-            let mine = fg.exe.eq_ignore_ascii_case(&me);
+        let me = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
+            .unwrap_or_default();
+        let front = win::foreground().filter(|fg| !fg.exe.eq_ignore_ascii_case(&me));
+        // Rewind itself is in front while the player reads this, so keep the app seen before it.
+        let in_front = front.and_then(|fg| {
             let (verdict, why) = games::judge(&fg, &installed, &inner.settings.game_apps, &inner.settings.not_games);
-            // Rewind itself is in front while the player reads this, so keep the app seen before it.
-            if !mine {
-                let seen = Seen {
-                    app: fg.exe.clone(),
-                    display: fg.monitor,
-                    full_screen: fg.full_screen,
-                    is_game: verdict.is_some(),
-                    reason: why.into(),
-                };
-                if inner.status.seen.as_ref() != Some(&seen) {
-                    inner.status.seen = Some(seen);
-                    changed = true;
-                }
+            let seen = Seen {
+                app: fg.exe.clone(),
+                display: fg.monitor,
+                full_screen: fg.full_screen,
+                is_game: verdict.is_some(),
+                reason: why.into(),
+            };
+            if inner.status.seen.as_ref() != Some(&seen) {
+                inner.status.seen = Some(seen);
+                changed = true;
             }
-            let game = (!mine).then_some(verdict).flatten();
-            if let Some(game) = game {
+            verdict.map(|g| (fg, g))
+        });
+        // A game that runs behind other windows still counts.
+        let (user, blocked) = (&inner.settings.game_apps, &inner.settings.not_games);
+        let found = in_front.or_else(|| games::running(&self.processes.lock(), &installed, user, blocked));
+        match found {
+            Some((fg, game)) => {
                 // A new match must hold for a moment, so a short full-screen video or overlay does not start capture.
                 let since = match &inner.candidate {
                     Some((exe, t)) if *exe == fg.exe => *t,
@@ -335,9 +355,8 @@ impl Recorder {
                     inner.game_seen = Some(Instant::now());
                     inner.game_monitor = fg.monitor.or(inner.game_monitor);
                 }
-            } else {
-                inner.candidate = None;
             }
+            None => inner.candidate = None,
         }
 
         if inner.status.game.is_some() && !inner.game_seen.is_some_and(|t| t.elapsed() < GAME_LINGER) {

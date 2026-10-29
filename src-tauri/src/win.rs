@@ -55,6 +55,11 @@ pub fn fixed_drives() -> Vec<String> {
     imp::fixed_drives()
 }
 
+/// Full exe paths of the running processes the user may read. Opens every process, so call it every few seconds at most.
+pub fn processes() -> Vec<String> {
+    imp::processes()
+}
+
 pub fn monitors() -> Vec<Monitor> {
     imp::monitors()
 }
@@ -124,10 +129,10 @@ mod imp {
         RRF_RT_REG_SZ,
     };
     use windows_sys::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
-    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
     };
+    use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GHND};
     use windows_sys::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     };
@@ -190,6 +195,33 @@ mod imp {
             };
             Some(super::Foreground { exe, title, path, monitor, full_screen })
         }
+    }
+
+    pub fn processes() -> Vec<String> {
+        let mut paths = Vec::new();
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+            if snap.is_null() || snap == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                return paths;
+            }
+            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut ok = Process32FirstW(snap, &mut entry) != 0;
+            while ok {
+                let proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, entry.th32ProcessID);
+                if !proc.is_null() {
+                    let mut buf = [0u16; 520];
+                    let mut len = buf.len() as u32;
+                    if QueryFullProcessImageNameW(proc, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0 {
+                        paths.push(String::from_utf16_lossy(&buf[..len as usize]));
+                    }
+                    CloseHandle(proc);
+                }
+                ok = Process32NextW(snap, &mut entry) != 0;
+            }
+            CloseHandle(snap);
+        }
+        paths
     }
 
     /// The exe name (no ".exe") of process `pid`, read from a process snapshot.
@@ -407,6 +439,9 @@ mod imp {
         Vec::new()
     }
     pub fn fixed_drives() -> Vec<String> {
+        Vec::new()
+    }
+    pub fn processes() -> Vec<String> {
         Vec::new()
     }
     pub fn monitors() -> Vec<Monitor> {
