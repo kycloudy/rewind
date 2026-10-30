@@ -1,6 +1,6 @@
 [package]
 name = "rewind"
-version = "0.0.7"
+version = "0.0.8"
 description = "Lightweight gameplay clipping for Windows"
 edition = "2021"
 
