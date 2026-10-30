@@ -157,7 +157,12 @@ pub fn running(paths: &[String], installed: &[Installed], user_games: &[String],
         let exe = Path::new(path).file_stem()?.to_string_lossy().into_owned();
         let fg = Foreground { exe, path: path.clone(), ..Default::default() };
         let game = detect(&fg, installed, user_games, not_games)?;
-        Some((fg, game))
+        // The folder and known-game lists also match launcher helpers and anti-cheat services that run all day.
+        let low = fg.exe.to_lowercase();
+        let from_user = listed(user_games, &low);
+        let lower_path = path.to_lowercase().replace('/', "\\");
+        let from_store = installed.iter().any(|g| lower_path.starts_with(&g.dir));
+        (from_user || from_store).then_some((fg, game))
     })
 }
 
