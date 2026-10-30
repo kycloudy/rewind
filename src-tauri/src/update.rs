@@ -1,5 +1,5 @@
 //! In-app updates. The release workflow signs the installer and publishes
-//! `latest.json` with each GitHub release. The updater reads it from the latest release.
+//! `latest.json` with each GitHub release and copies it to the fixed `updater` release, which the app reads.
 
 use crate::AppState;
 use serde::Serialize;
